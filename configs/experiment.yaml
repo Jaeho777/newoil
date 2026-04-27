@@ -1,0 +1,21 @@
+repo:
+  url: "https://github.com/Jaeho777/newoil.git"
+  workdir: "/content/newoil"
+
+data:
+  format: "long"      # long | wide
+  file_path: ""       # Leave empty to upload in Colab
+  sheet_name: 0       # Used only for Excel files
+  freq: "ME"          # Examples: D, H, W, M, ME
+  time_col: "ds"
+  id_col: "unique_id" # Set to null for single-series long data without an id column
+  target_col: "y"
+
+experiment:
+  horizon: 12
+  val_size: 12
+  test_size: 12
+  patch_len: 16
+
+plot:
+  lookback_multiplier: 2

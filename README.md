@@ -1,22 +1,33 @@
-# NeuralForecast Colab Notebook
+# NeuralForecast Colab Experiment
 
-[Open in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/neuralforecast_gru_timexer_itransformer_colab.ipynb)
+[Open in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/notebooks/neuralforecast_model_comparison.ipynb)
 
-This repository contains a Colab-ready notebook that compares `GRU`, `TimeXer`, and `iTransformer` from `neuralforecast`.
+This repository is kept intentionally small:
 
-The notebook is designed for user-provided data and produces:
+- [configs/experiment.yaml](/Users/jaeholee/Desktop/newoil/configs/experiment.yaml)
+- [notebooks/neuralforecast_model_comparison.ipynb](/Users/jaeholee/Desktop/newoil/notebooks/neuralforecast_model_comparison.ipynb)
 
-- train / validation loss curves
-- forecast plots on the test horizon
-- metrics tables with `MAE`, `RMSE`, `MAPE`, and `sMAPE`
+Structure:
 
-Supported data layouts:
+- `configs/experiment.yaml`: dataset schema, frequency, horizon, validation split, test split
+- `notebooks/neuralforecast_model_comparison.ipynb`: Colab notebook that reads the YAML and runs the experiment
 
-- long format: one row per timestamp and series, for example `unique_id`, `ds`, `y`
-- wide format: one timestamp column and one value column per series
+What the notebook does:
+
+- installs `neuralforecast` directly from the Nixtla GitHub repository
+- loads your data from `csv/xlsx` upload or from a configured path
+- trains `GRU`, `TimeXer`, and `iTransformer` with library defaults
+- outputs train/validation loss curves
+- outputs forecast plots
+- outputs `MAE`, `RMSE`, `MAPE`, `sMAPE` tables
+
+Why YAML here:
+
+- keeps dataset-specific settings out of the notebook
+- makes reruns reproducible
+- keeps the repo clean without vendoring the full `neuralforecast` source tree
 
 Notes:
 
-- model-specific hyperparameters are left at the library defaults
-- only required experiment settings are provided: forecast horizon, computed input window, number of series, validation split, and test split
-- the notebook aligns the panel by timestamp and drops rows with missing values across series before training
+- `TimeXer` and `iTransformer` are multivariate models, so the notebook aligns the panel by timestamp and drops timestamps with missing values across series before training
+- if `data.file_path` is empty, the notebook asks you to upload the file in Colab
