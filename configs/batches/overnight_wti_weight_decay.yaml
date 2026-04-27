@@ -1,0 +1,72 @@
+name: "overnight_wti_weight_decay"
+description: "AdamW weight-decay overnight runs for WTI from 2011-01-01 onward."
+start_date: "2011-01-01"
+feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
+
+runtime:
+  random_seed: 1
+
+models:
+  - "GRU"
+  - "TimeXer"
+  - "iTransformer"
+
+dataset_refs:
+  daily: "configs/papers_raw.yaml"
+  weekly: "configs/papers_weekly.yaml"
+
+report:
+  lookback_plot: 120
+
+scenarios:
+  - name: "uni_daily_weight_decay"
+    dataset: "daily"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+    training:
+      optimizer:
+        name: "adamw"
+        kwargs:
+          weight_decay: 0.0001
+
+  - name: "uni_weekly_weight_decay"
+    dataset: "weekly"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+    training:
+      optimizer:
+        name: "adamw"
+        kwargs:
+          weight_decay: 0.0001
+
+  - name: "multi_daily_weight_decay"
+    dataset: "daily"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+    training:
+      optimizer:
+        name: "adamw"
+        kwargs:
+          weight_decay: 0.0001
+
+  - name: "multi_weekly_weight_decay"
+    dataset: "weekly"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+    training:
+      optimizer:
+        name: "adamw"
+        kwargs:
+          weight_decay: 0.0001

@@ -1,52 +1,106 @@
-# NeuralForecast Colab Experiment
+# Overnight WTI Loss Tracking
 
-[Open in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/notebooks/neuralforecast_model_comparison.ipynb)
+[Start Here in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/notebooks/overnight_wti_baseline_runner.ipynb)
 
-This repository is kept intentionally small:
+This repository is structured for one main purpose:
 
-- [configs/experiment.yaml](/Users/jaeholee/Desktop/newoil/configs/experiment.yaml)
-- [configs/papers_weekly.yaml](/Users/jaeholee/Desktop/newoil/configs/papers_weekly.yaml)
-- [configs/papers_raw.yaml](/Users/jaeholee/Desktop/newoil/configs/papers_raw.yaml)
-- [configs/tuning_overrides.example.yaml](/Users/jaeholee/Desktop/newoil/configs/tuning_overrides.example.yaml)
-- [notebooks/neuralforecast_model_comparison.ipynb](/Users/jaeholee/Desktop/newoil/notebooks/neuralforecast_model_comparison.ipynb)
+- run overnight WTI experiments in Colab
+- save all artifacts to persistent storage
+- review train loss, validation loss, forecast plots, and metrics the next morning
 
-Structure:
+## Main Workflow
 
-- `configs/experiment.yaml`: dataset schema, frequency, horizon, validation split, test split
-- `configs/papers_weekly.yaml`: ready-to-run config for `data/papers_db_weekly.csv`
-- `configs/papers_raw.yaml`: ready-to-run config for `data/papers_db_raw.csv`
-- `configs/tuning_overrides.example.yaml`: optional reference for later tuning overrides
-- `notebooks/neuralforecast_model_comparison.ipynb`: Colab notebook that reads the YAML and runs the experiment
+1. Open [notebooks/overnight_wti_baseline_runner.ipynb](/Users/jaeholee/Desktop/newoil/notebooks/overnight_wti_baseline_runner.ipynb).
+2. Leave `SAVE_TO_GOOGLE_DRIVE = True` so outputs survive overnight.
+3. Run the notebook from top to bottom.
+4. In the morning, read the saved batch summary and the per-run plots.
 
-What the notebook does:
+The default overnight batch is:
 
-- installs `neuralforecast` directly from the Nixtla GitHub repository
-- loads your data from `csv/xlsx` upload or from a configured repo path such as `data/my_dataset.csv`
-- trains `GRU`, `TimeXer`, and `iTransformer` with library defaults unless optional overrides are added
-- outputs train/validation loss curves
-- outputs forecast plots
-- outputs `MAE`, `RMSE`, `MAPE`, `sMAPE` tables
+- `uni_daily`
+- `uni_weekly`
+- `multi_daily`
+- `multi_weekly`
 
-Why YAML here:
+Each scenario runs:
 
-- keeps dataset-specific settings out of the notebook
-- makes reruns reproducible
-- keeps the repo clean without vendoring the full `neuralforecast` source tree
+- `GRU`
+- `TimeXer`
+- `iTransformer`
 
-Recommended workflow:
+## What Gets Saved
 
-1. Open the notebook and choose `CONFIG_RELATIVE_PATH`.
-2. Start with `configs/papers_weekly.yaml` or `configs/papers_raw.yaml`.
-3. Check train / validation loss and forecast quality.
-4. Only if validation loss stalls or overfits, copy selective fields from [configs/tuning_overrides.example.yaml](/Users/jaeholee/Desktop/newoil/configs/tuning_overrides.example.yaml) into the chosen config.
+Each run writes:
+
+- `loss_history.csv`
+- `loss_curve.png`
+- `forecast_plot.png`
+- `metrics.csv`
+- `predictions.csv`
+- `config_snapshot.yaml`
+- `summary.json`
+
+Each batch writes:
+
+- `summary.csv`
+- `report.html`
+- `report.md`
+- `batch_config_snapshot.yaml`
+
+## Current Baseline Assumptions
+
+- target is treated as `WTI`
+- dataset column used for WTI is `Com_CrudeOil`
+- start date is fixed at `2011-01-01`
+- baseline keeps model hyperparameters at library defaults
+- only experiment-level settings are fixed in the batch config:
+  - scenario type
+  - horizon
+  - validation size
+  - test size
+
+## Multivariate Feature Sets
+
+The multivariate feature manifests live in:
+
+- [configs/manifests/wti_feature_sets.yaml](/Users/jaeholee/Desktop/newoil/configs/manifests/wti_feature_sets.yaml)
 
 Notes:
 
-- `TimeXer` and `iTransformer` are multivariate models, so the notebook aligns the panel by timestamp before training
-- the included `papers_weekly` and `papers_raw` configs use `forward fill` and then trim to the first timestamp where all 228 series are available
-- if `data.file_path` is empty, the notebook asks you to upload the file in Colab
-- if you commit a dataset into this repository, place it under `data/` and set `data.file_path` in [configs/experiment.yaml](/Users/jaeholee/Desktop/newoil/configs/experiment.yaml), for example `data/my_dataset.csv`
-- if the dataset is large or private, do not commit it; leave `data.file_path` empty and upload it in Colab instead
-- optional `runtime:` and `training:` sections can be added to `experiment.yaml` when you want to override the baseline
-- the notebook currently supports safe shared overrides such as `random_seed`, `input_size`, `batch_size`, `max_steps`, `loss`, and `optimizer`
-- older pipeline features such as Optuna studies or external multi-GPU schedulers are intentionally not wired into the baseline notebook yet
+- daily uses the exact feature names you specified
+- weekly uses the weekly dataset equivalents where needed, for example `*_lag1`
+- both daily and weekly manifests become fully usable from early January 2011 after forward fill
+
+## Important Configs
+
+- [configs/batches/overnight_wti_baseline.yaml](/Users/jaeholee/Desktop/newoil/configs/batches/overnight_wti_baseline.yaml)
+- [configs/batches/overnight_wti_diff.yaml](/Users/jaeholee/Desktop/newoil/configs/batches/overnight_wti_diff.yaml)
+- [configs/batches/overnight_wti_weight_decay.yaml](/Users/jaeholee/Desktop/newoil/configs/batches/overnight_wti_weight_decay.yaml)
+- [configs/batches/overnight_wti_diff_weight_decay.yaml](/Users/jaeholee/Desktop/newoil/configs/batches/overnight_wti_diff_weight_decay.yaml)
+- [configs/manifests/wti_feature_sets.yaml](/Users/jaeholee/Desktop/newoil/configs/manifests/wti_feature_sets.yaml)
+- [configs/papers_raw.yaml](/Users/jaeholee/Desktop/newoil/configs/papers_raw.yaml)
+- [configs/papers_weekly.yaml](/Users/jaeholee/Desktop/newoil/configs/papers_weekly.yaml)
+
+Use order:
+
+1. `overnight_wti_baseline.yaml`
+2. `overnight_wti_weight_decay.yaml`
+3. `overnight_wti_diff.yaml`
+4. `overnight_wti_diff_weight_decay.yaml`
+
+## Repository Layout
+
+- `data/`: committed raw source files used by the overnight runs
+- `configs/manifests/`: target and feature manifests
+- `configs/batches/`: batch definitions for overnight experiments
+- `src/newoil/`: reusable loading, running, plotting, and reporting code
+- `notebooks/`: Colab notebooks for execution and review
+
+## Existing Single-Run Notebook
+
+The earlier single-config notebook is still available here:
+
+- [notebooks/neuralforecast_model_comparison.ipynb](/Users/jaeholee/Desktop/newoil/notebooks/neuralforecast_model_comparison.ipynb)
+
+Use that one for ad hoc debugging.
+Use the overnight runner notebook for the main batch workflow.

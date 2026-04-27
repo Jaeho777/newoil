@@ -1,0 +1,52 @@
+name: "overnight_wti_diff"
+description: "Diff-only overnight runs for WTI from 2011-01-01 onward."
+start_date: "2011-01-01"
+feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
+
+runtime:
+  random_seed: 1
+
+models:
+  - "GRU"
+  - "TimeXer"
+  - "iTransformer"
+
+dataset_refs:
+  daily: "configs/papers_raw.yaml"
+  weekly: "configs/papers_weekly.yaml"
+
+report:
+  lookback_plot: 120
+
+scenarios:
+  - name: "uni_daily_diff"
+    dataset: "daily"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "diff"
+
+  - name: "uni_weekly_diff"
+    dataset: "weekly"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "diff"
+
+  - name: "multi_daily_diff"
+    dataset: "daily"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "diff"
+
+  - name: "multi_weekly_diff"
+    dataset: "weekly"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "diff"
