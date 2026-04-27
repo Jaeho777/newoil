@@ -1,0 +1,56 @@
+name: "smoke_wti_baseline"
+description: "Fast smoke test for the full WTI baseline pipeline before the overnight run."
+start_date: "2011-01-01"
+feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
+
+runtime:
+  random_seed: 1
+
+models:
+  - "GRU"
+  - "TimeXer"
+  - "iTransformer"
+
+dataset_refs:
+  daily: "configs/papers_raw.yaml"
+  weekly: "configs/papers_weekly.yaml"
+
+training_defaults:
+  max_steps: 5
+  val_check_steps: 2
+
+report:
+  lookback_plot: 60
+
+scenarios:
+  - name: "uni_daily_smoke"
+    dataset: "daily"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+
+  - name: "uni_weekly_smoke"
+    dataset: "weekly"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+
+  - name: "multi_daily_smoke"
+    dataset: "daily"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+
+  - name: "multi_weekly_smoke"
+    dataset: "weekly"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"

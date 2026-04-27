@@ -11,9 +11,11 @@ This repository is structured for one main purpose:
 ## Main Workflow
 
 1. Open [notebooks/overnight_wti_baseline_runner.ipynb](/Users/jaeholee/Desktop/newoil/notebooks/overnight_wti_baseline_runner.ipynb).
-2. Leave `SAVE_TO_GOOGLE_DRIVE = True` so outputs survive overnight.
-3. Run the notebook from top to bottom.
-4. In the morning, read the saved batch summary and the per-run plots.
+2. For a quick risk check, first set `BATCH_CONFIG_RELATIVE_PATH = "configs/batches/smoke_wti_baseline.yaml"`.
+3. Leave `SAVE_TO_GOOGLE_DRIVE = True` so outputs survive overnight.
+4. Run the notebook from top to bottom.
+5. If the smoke batch finishes cleanly, switch back to `configs/batches/overnight_wti_baseline.yaml` and start the real overnight run.
+6. In the morning, read the saved batch summary and the per-run plots.
 
 The default overnight batch is:
 
@@ -73,6 +75,7 @@ Notes:
 
 ## Important Configs
 
+- [configs/batches/smoke_wti_baseline.yaml](/Users/jaeholee/Desktop/newoil/configs/batches/smoke_wti_baseline.yaml)
 - [configs/batches/overnight_wti_baseline.yaml](/Users/jaeholee/Desktop/newoil/configs/batches/overnight_wti_baseline.yaml)
 - [configs/batches/overnight_wti_diff.yaml](/Users/jaeholee/Desktop/newoil/configs/batches/overnight_wti_diff.yaml)
 - [configs/batches/overnight_wti_weight_decay.yaml](/Users/jaeholee/Desktop/newoil/configs/batches/overnight_wti_weight_decay.yaml)
@@ -83,10 +86,11 @@ Notes:
 
 Use order:
 
-1. `overnight_wti_baseline.yaml`
-2. `overnight_wti_weight_decay.yaml`
-3. `overnight_wti_diff.yaml`
-4. `overnight_wti_diff_weight_decay.yaml`
+1. `smoke_wti_baseline.yaml`
+2. `overnight_wti_baseline.yaml`
+3. `overnight_wti_weight_decay.yaml`
+4. `overnight_wti_diff.yaml`
+5. `overnight_wti_diff_weight_decay.yaml`
 
 ## Repository Layout
 
