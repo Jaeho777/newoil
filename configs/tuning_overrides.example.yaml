@@ -1,0 +1,29 @@
+runtime:
+  random_seed: 1
+
+training:
+  input_size: 64
+  batch_size: 32
+  valid_batch_size: 8
+  windows_batch_size: null
+  inference_windows_batch_size: -1
+  max_steps: 240
+  val_size: 16
+  scaler_type: "identity"
+  val_check_steps: 4
+  early_stop_patience_steps: 8
+  model_step_size: 1
+  loss: "mse"          # mae | mse
+  learning_rate: 0.001
+  optimizer:
+    name: "adamw"      # adam | adamw
+    kwargs: {}
+
+# Keep this file as a reference template.
+# The current notebook primarily targets the clean baseline workflow and only
+# consumes safe shared overrides when you copy relevant fields into
+# configs/experiment.yaml.
+#
+# More complex items from older pipelines such as Optuna studies, multi-GPU job
+# schedulers, or custom ReduceLROnPlateau orchestration should be added only if
+# the baseline underperforms and we decide to build a dedicated tuning path.
