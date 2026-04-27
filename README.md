@@ -15,7 +15,7 @@ Structure:
 What the notebook does:
 
 - installs `neuralforecast` directly from the Nixtla GitHub repository
-- loads your data from `csv/xlsx` upload or from a configured path
+- loads your data from `csv/xlsx` upload or from a configured repo path such as `data/my_dataset.csv`
 - trains `GRU`, `TimeXer`, and `iTransformer` with library defaults
 - outputs train/validation loss curves
 - outputs forecast plots
@@ -31,3 +31,5 @@ Notes:
 
 - `TimeXer` and `iTransformer` are multivariate models, so the notebook aligns the panel by timestamp and drops timestamps with missing values across series before training
 - if `data.file_path` is empty, the notebook asks you to upload the file in Colab
+- if you commit a dataset into this repository, place it under `data/` and set `data.file_path` in [configs/experiment.yaml](/Users/jaeholee/Desktop/newoil/configs/experiment.yaml), for example `data/my_dataset.csv`
+- if the dataset is large or private, do not commit it; leave `data.file_path` empty and upload it in Colab instead

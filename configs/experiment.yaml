@@ -4,7 +4,7 @@ repo:
 
 data:
   format: "long"      # long | wide
-  file_path: ""       # Leave empty to upload in Colab
+  file_path: ""       # Example: data/my_dataset.csv ; leave empty to upload in Colab
   sheet_name: 0       # Used only for Excel files
   freq: "ME"          # Examples: D, H, W, M, ME
   time_col: "ds"
