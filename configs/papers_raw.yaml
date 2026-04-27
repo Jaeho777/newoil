@@ -1,0 +1,28 @@
+name: "papers_raw"
+
+repo:
+  url: "https://github.com/Jaeho777/newoil.git"
+  workdir: "/content/newoil"
+
+data:
+  format: "wide"
+  file_path: "data/papers_db_raw.csv"
+  sheet_name: 0
+  freq: "D"
+  time_col: "dt"
+  id_col: null
+  target_col: "y"
+
+experiment:
+  horizon: 12
+  val_size: 12
+  test_size: 12
+  patch_len: 16
+
+plot:
+  lookback_multiplier: 2
+
+preprocess:
+  reindex_full_range: true
+  fill_method: "ffill"
+  drop_before_first_complete: true

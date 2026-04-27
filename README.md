@@ -5,12 +5,16 @@
 This repository is kept intentionally small:
 
 - [configs/experiment.yaml](/Users/jaeholee/Desktop/newoil/configs/experiment.yaml)
+- [configs/papers_weekly.yaml](/Users/jaeholee/Desktop/newoil/configs/papers_weekly.yaml)
+- [configs/papers_raw.yaml](/Users/jaeholee/Desktop/newoil/configs/papers_raw.yaml)
 - [configs/tuning_overrides.example.yaml](/Users/jaeholee/Desktop/newoil/configs/tuning_overrides.example.yaml)
 - [notebooks/neuralforecast_model_comparison.ipynb](/Users/jaeholee/Desktop/newoil/notebooks/neuralforecast_model_comparison.ipynb)
 
 Structure:
 
 - `configs/experiment.yaml`: dataset schema, frequency, horizon, validation split, test split
+- `configs/papers_weekly.yaml`: ready-to-run config for `data/papers_db_weekly.csv`
+- `configs/papers_raw.yaml`: ready-to-run config for `data/papers_db_raw.csv`
 - `configs/tuning_overrides.example.yaml`: optional reference for later tuning overrides
 - `notebooks/neuralforecast_model_comparison.ipynb`: Colab notebook that reads the YAML and runs the experiment
 
@@ -31,13 +35,15 @@ Why YAML here:
 
 Recommended workflow:
 
-1. Start with the clean baseline in [configs/experiment.yaml](/Users/jaeholee/Desktop/newoil/configs/experiment.yaml).
-2. Check train / validation loss and forecast quality.
-3. Only if validation loss stalls or overfits, copy selective fields from [configs/tuning_overrides.example.yaml](/Users/jaeholee/Desktop/newoil/configs/tuning_overrides.example.yaml) into `experiment.yaml`.
+1. Open the notebook and choose `CONFIG_RELATIVE_PATH`.
+2. Start with `configs/papers_weekly.yaml` or `configs/papers_raw.yaml`.
+3. Check train / validation loss and forecast quality.
+4. Only if validation loss stalls or overfits, copy selective fields from [configs/tuning_overrides.example.yaml](/Users/jaeholee/Desktop/newoil/configs/tuning_overrides.example.yaml) into the chosen config.
 
 Notes:
 
-- `TimeXer` and `iTransformer` are multivariate models, so the notebook aligns the panel by timestamp and drops timestamps with missing values across series before training
+- `TimeXer` and `iTransformer` are multivariate models, so the notebook aligns the panel by timestamp before training
+- the included `papers_weekly` and `papers_raw` configs use `forward fill` and then trim to the first timestamp where all 228 series are available
 - if `data.file_path` is empty, the notebook asks you to upload the file in Colab
 - if you commit a dataset into this repository, place it under `data/` and set `data.file_path` in [configs/experiment.yaml](/Users/jaeholee/Desktop/newoil/configs/experiment.yaml), for example `data/my_dataset.csv`
 - if the dataset is large or private, do not commit it; leave `data.file_path` empty and upload it in Colab instead
