@@ -83,6 +83,58 @@ def default_input_size(horizon: int, patch_len: int = 16) -> int:
     return int(math.ceil(base / patch_len) * patch_len)
 
 
+def estimate_steps_per_epoch(
+    train_length: int,
+    input_size: int,
+    horizon: int,
+    n_series: int,
+    training_cfg: Dict[str, Any],
+) -> int:
+    windows_per_series = max(train_length - input_size - horizon + 1, 1)
+    total_windows = max(windows_per_series * max(n_series, 1), 1)
+
+    windows_batch_size = training_cfg.get("windows_batch_size")
+    if windows_batch_size is not None and int(windows_batch_size) > 0:
+        effective_batch_size = int(windows_batch_size)
+    else:
+        effective_batch_size = int(training_cfg.get("batch_size") or total_windows)
+
+    return max(int(math.ceil(total_windows / max(effective_batch_size, 1))), 1)
+
+
+def resolve_epoch_compatible_training_cfg(
+    training_cfg: Dict[str, Any],
+    train_length: int,
+    input_size: int,
+    horizon: int,
+    n_series: int,
+) -> Dict[str, Any]:
+    resolved = deepcopy(training_cfg)
+    max_epochs = resolved.get("max_epochs")
+    if max_epochs is None:
+        return resolved
+
+    steps_per_epoch = estimate_steps_per_epoch(
+        train_length=train_length,
+        input_size=input_size,
+        horizon=horizon,
+        n_series=n_series,
+        training_cfg=resolved,
+    )
+    epoch_equivalent_max_steps = int(max_epochs) * steps_per_epoch
+
+    current_max_steps = resolved.get("max_steps")
+    if current_max_steps is None:
+        resolved["max_steps"] = epoch_equivalent_max_steps
+    else:
+        resolved["max_steps"] = min(int(current_max_steps), epoch_equivalent_max_steps)
+
+    resolved["resolved_from_max_epochs"] = True
+    resolved["estimated_steps_per_epoch"] = steps_per_epoch
+    resolved["epoch_equivalent_max_steps"] = epoch_equivalent_max_steps
+    return resolved
+
+
 def read_tabular_file(path: Path, sheet_name: int = 0) -> pd.DataFrame:
     lower_path = path.name.lower()
     if lower_path.endswith(".csv"):
@@ -249,7 +301,6 @@ def build_common_model_kwargs(
         "batch_size",
         "valid_batch_size",
         "max_steps",
-        "max_epochs",
         "val_check_steps",
         "early_stop_patience_steps",
         "step_size",
@@ -1025,6 +1076,13 @@ def run_single_experiment(
     transformed_long = panel_to_long(transformed_panel)
     train_val_df = panel_to_long(train_val_panel)
     n_series = len(selected_columns)
+    training_cfg = resolve_epoch_compatible_training_cfg(
+        training_cfg=training_cfg,
+        train_length=len(train_val_panel),
+        input_size=input_size,
+        horizon=horizon,
+        n_series=n_series,
+    )
 
     kwargs = build_common_model_kwargs(
         model_name=model_name,
