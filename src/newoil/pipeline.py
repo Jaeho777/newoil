@@ -457,7 +457,7 @@ def build_common_model_kwargs(
         if value is not None:
             kwargs[key] = value
 
-    if hist_exog_columns:
+    if hist_exog_columns and model_name in {"GRU", "TimeXer"}:
         kwargs["hist_exog_list"] = list(hist_exog_columns)
 
     if model_name in {"TimeXer", "iTransformer"}:
@@ -1595,9 +1595,14 @@ def run_single_experiment(
     nf.fit(df=train_val_df, val_size=val_size)
     preds_df = nf.predict().sort_values(["unique_id", "ds"]).reset_index(drop=True)
 
-    target_pred_rows = preds_df[preds_df["unique_id"] == target_column].copy()
+    target_pred_rows = preds_df[preds_df["unique_id"] == display_target_name].copy()
     target_pred_rows["ds"] = pd.to_datetime(target_pred_rows["ds"])
     target_predictions = target_pred_rows[model_name].to_numpy()
+    if len(target_predictions) != len(test_dates):
+        raise ValueError(
+            f"Prediction length mismatch for {scenario_cfg['name']} / {model_name}: "
+            f"received {len(target_predictions)} predictions for {len(test_dates)} test timestamps."
+        )
     actual_target = original_panel[target_column].loc[test_dates]
     predicted_target = invert_predictions(
         transform_name=target_transform,

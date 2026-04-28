@@ -8,7 +8,7 @@ data:
   format: "wide"
   file_path: "data/0428DB_daily.csv"
   sheet_name: 0
-  freq: "D"
+  freq: "B"
   time_col: "dt"
   id_col: null
   target_col: "y"
