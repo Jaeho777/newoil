@@ -58,7 +58,7 @@ def run_plan(repo_root: Path, batch_configs: List[Path], output_root: Path) -> P
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
-    from newoil.pipeline import run_batch_from_config
+    from newoil.pipeline import build_company_master_report, run_batch_from_config
 
     accelerator, devices = detect_accelerator()
     print(f"Detected accelerator: {accelerator} / devices={devices}")
@@ -69,6 +69,7 @@ def run_plan(repo_root: Path, batch_configs: List[Path], output_root: Path) -> P
 
     combined_rows = []
     manifest_rows = []
+    batch_results = []
 
     with TemporaryDirectory(prefix="company_plan_") as tmp_dir:
         tmp_root = Path(tmp_dir)
@@ -85,6 +86,7 @@ def run_plan(repo_root: Path, batch_configs: List[Path], output_root: Path) -> P
                 repo_root=repo_root,
                 output_root=plan_root,
             )
+            batch_results.append(result)
             summary_df = result.summary_df.copy()
             summary_df["source_batch_config"] = str(source_path)
             summary_df["resolved_accelerator"] = accelerator
@@ -104,6 +106,7 @@ def run_plan(repo_root: Path, batch_configs: List[Path], output_root: Path) -> P
     combined_csv = plan_root / "combined_summary.csv"
     combined_df.to_csv(combined_csv, index=False)
     pd.DataFrame(manifest_rows).to_csv(plan_root / "run_manifest.csv", index=False)
+    master_report = build_company_master_report(batch_results, plan_root)
 
     meta = {
         "plan_root": str(plan_root),
@@ -111,12 +114,14 @@ def run_plan(repo_root: Path, batch_configs: List[Path], output_root: Path) -> P
         "resolved_accelerator": accelerator,
         "resolved_devices": devices,
         "batch_configs": [str(p if p.is_absolute() else (repo_root / p).resolve()) for p in batch_configs],
+        "master_report_md": str(master_report),
     }
     with (plan_root / "plan_meta.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
     print(f"\nPlan output root: {plan_root}")
     print(f"Combined summary: {combined_csv}")
+    print(f"Master report: {master_report}")
     return plan_root
 
 

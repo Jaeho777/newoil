@@ -100,6 +100,7 @@ class BatchResult:
     summary_df: pd.DataFrame
     report_html: Path
     report_markdown: Path
+    batch_config: Dict[str, Any]
 
 
 def load_yaml(path: Path) -> Dict[str, Any]:
@@ -1100,6 +1101,366 @@ def build_markdown_report(
     return "\n".join(lines)
 
 
+def normalize_company_experiment_key(batch_name: str) -> str:
+    for prefix in ["daily_wti_h12_", "weekly_wti_h2_"]:
+        if batch_name.startswith(prefix):
+            return batch_name[len(prefix) :]
+    return batch_name
+
+
+def company_experiment_title(experiment_key: str) -> str:
+    mapping = {
+        "mse_report": "Requested MSE Report Setting",
+        "mse_scaled_regularized": "Scaled + Regularized Improvement Setting",
+        "mse_raw_report": "Raw Reference Setting",
+        "mse_scaled_val_sweep": "Validation Size Sweep Setting",
+    }
+    return mapping.get(experiment_key, experiment_key.replace("_", " ").title())
+
+
+def load_best_model_summary(batch_dir: Path) -> pd.DataFrame:
+    path = batch_dir / "best_model_summary.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def summarize_dataset_result_line(
+    best_df: pd.DataFrame,
+    dataset: str,
+    baseline_df: Optional[pd.DataFrame] = None,
+) -> List[str]:
+    rows = best_df[best_df["dataset"] == dataset].copy()
+    if rows.empty:
+        return [f"{_dataset_label(dataset)} 결과를 요약할 성공 run이 없습니다."]
+
+    lines: List[str] = []
+    uni = rows[rows["mode"] == "univariate"]
+    multi = rows[rows["mode"] == "multivariate"]
+    if not uni.empty:
+        row = uni.iloc[0]
+        lines.append(
+            f"{_dataset_label(dataset)} 단변량에서는 {row['best_model']}가 "
+            f"MAE {_float_text(row['MAE'])}, RMSE {_float_text(row['RMSE'])}로 가장 좋았습니다."
+        )
+    if not multi.empty:
+        row = multi.iloc[0]
+        lines.append(
+            f"{_dataset_label(dataset)} 다변량에서는 {row['best_model']}가 "
+            f"MAE {_float_text(row['MAE'])}, RMSE {_float_text(row['RMSE'])}로 가장 좋았습니다."
+        )
+
+    if not uni.empty and not multi.empty:
+        uni_row = uni.iloc[0]
+        multi_row = multi.iloc[0]
+        if float(multi_row["RMSE"]) < float(uni_row["RMSE"]):
+            lines.append(
+                f"{_dataset_label(dataset)}에서는 다변량이 RMSE 기준으로 단변량보다 "
+                f"{float(uni_row['RMSE']) - float(multi_row['RMSE']):.6f} 개선됐습니다."
+            )
+        else:
+            lines.append(
+                f"{_dataset_label(dataset)}에서는 단변량이 RMSE 기준으로 다변량보다 "
+                f"{float(multi_row['RMSE']) - float(uni_row['RMSE']):.6f} 더 안정적이었습니다."
+            )
+
+    if baseline_df is not None and not baseline_df.empty:
+        baseline_rows = baseline_df[baseline_df["dataset"] == dataset]
+        for mode in ["univariate", "multivariate"]:
+            current_mode = rows[rows["mode"] == mode]
+            baseline_mode = baseline_rows[baseline_rows["mode"] == mode]
+            if current_mode.empty or baseline_mode.empty:
+                continue
+            current_rmse = float(current_mode.iloc[0]["RMSE"])
+            baseline_rmse = float(baseline_mode.iloc[0]["RMSE"])
+            delta = baseline_rmse - current_rmse
+            if abs(delta) > 1e-9:
+                lines.append(
+                    f"{_dataset_label(dataset)} {mode}에서는 baseline 대비 RMSE가 "
+                    f"{delta:+.6f} 변했습니다."
+                )
+    return lines
+
+
+def summarize_dataset_insights(best_df: pd.DataFrame, summary_df: pd.DataFrame, dataset: str) -> List[str]:
+    rows = best_df[best_df["dataset"] == dataset].copy()
+    dataset_rows = summary_df[(summary_df["dataset"] == dataset) & (summary_df["status"] != "failed")].copy()
+    lines: List[str] = []
+    if not rows.empty:
+        if {"min_val_loss", "final_val_loss"}.issubset(rows.columns):
+            improving_modes = []
+            for _, row in rows.iterrows():
+                if float(row["final_val_loss"]) <= float(row["min_val_loss"]) * 1.05:
+                    improving_modes.append(_mode_label(str(row["mode"])))
+            if improving_modes:
+                lines.append(
+                    f"{_dataset_label(dataset)}에서는 {', '.join(improving_modes)} 설정이 validation rebound 없이 비교적 안정적으로 수렴했습니다."
+                )
+    if not dataset_rows.empty and "issue_note" in dataset_rows.columns:
+        issue_note = str(dataset_rows.sort_values(["RMSE", "MAE"]).iloc[0].get("issue_note", "")).strip()
+        if issue_note:
+            lines.append(issue_note)
+    if not lines:
+        lines.append(f"{_dataset_label(dataset)} 결과는 최종 지표와 예측 그래프를 함께 봐야 해석이 가능합니다.")
+    return lines[:3]
+
+
+def build_company_conclusion_sections(
+    group_df: pd.DataFrame,
+    best_df: pd.DataFrame,
+    baseline_df: Optional[pd.DataFrame],
+) -> Dict[str, List[str]]:
+    datasets = list(best_df["dataset"].dropna().unique()) if not best_df.empty else []
+    current_status = [
+        f"이번 실험군은 {', '.join(datasets) if datasets else '선택된 dataset'}에 대해 단변량과 다변량을 같은 보고 형식으로 비교합니다.",
+        f"성공 run 기준 모델 수는 {int((group_df['status'] != 'failed').sum())}개이고 실패 run 수는 {int((group_df['status'] == 'failed').sum())}개입니다.",
+        "Multivariate는 단일 타깃에 historical exogenous feature를 붙이는 구조로 계산되어 loss와 metric이 타깃 기준으로 정렬됩니다.",
+        "리포트의 실제값 대 예측값 그래프와 최종 metric 표를 함께 보고 결론을 내려야 합니다.",
+    ]
+
+    meaning = [
+        "단변량과 다변량의 우열은 raw loss 숫자보다 target 기준 MAE, RMSE, MAPE, sMAPE에서 판단하는 것이 맞습니다.",
+        "Validation loss와 최종 예측 metric이 같이 좋아질 때만 구조 변경이나 정규화가 실제로 도움이 되었다고 해석할 수 있습니다.",
+        "Daily와 Weekly는 horizon과 데이터 밀도가 달라서 같은 모델이라도 학습 양상과 metric 해석이 달라질 수 있습니다.",
+        "이번 결과는 이후 seed ensemble이나 추가 튜닝을 붙이기 전에 baseline과 개선 방향을 가르는 기준점 역할을 합니다.",
+    ]
+    if baseline_df is not None and not baseline_df.empty and not best_df.empty:
+        meaning[1] = "개선 실험은 baseline 대비 metric 변화량을 함께 보면서 정규화와 exogenous 구조가 실제 성능 개선으로 이어졌는지 판단합니다."
+
+    next_action = [
+        "다음 단계에서는 결과가 안정적인 설정을 기준 run으로 고정하고 seed ensemble로 재현성을 확인합니다.",
+        "Daily horizon과 Weekly horizon은 각각 실무 의사결정 단위에 맞춰 별도로 조정하는 것이 좋습니다.",
+        "Non-lag 거시 변수는 실제 공표 시점 기준으로 한 번 더 검토해 semantic leakage 가능성을 줄이는 것이 필요합니다.",
+        "최종 공유본에는 통합 report.md와 함께 핵심 metric 표, 실제 예측 그래프, loss curve만 남기고 나머지 탐색 결과는 부록으로 두는 것이 좋습니다.",
+    ]
+    return {"current_status": current_status, "meaning": meaning, "next_action": next_action}
+
+
+def build_company_master_report(batch_results: List[BatchResult], output_dir: Path) -> Path:
+    grouped: Dict[str, Dict[str, BatchResult]] = {}
+    ordered_keys: List[str] = []
+    for result in batch_results:
+        experiment_key = normalize_company_experiment_key(result.batch_config["name"])
+        dataset_names = [str(v) for v in result.summary_df["dataset"].dropna().unique()]
+        dataset_name = dataset_names[0] if dataset_names else (
+            "daily" if "daily" in result.batch_config["name"] else "weekly"
+        )
+        if experiment_key not in grouped:
+            grouped[experiment_key] = {}
+            ordered_keys.append(experiment_key)
+        grouped[experiment_key][dataset_name] = result
+
+    baseline_key = "mse_report" if "mse_report" in grouped else (ordered_keys[0] if ordered_keys else "")
+    lines = [
+        "# WTI Combined Review Report",
+        "",
+        f"- Generated at: {datetime.utcnow().isoformat()}Z",
+        "",
+    ]
+
+    dataset_order = {"daily": 0, "weekly": 1}
+    mode_order = {"univariate": 0, "multivariate": 1}
+    model_order = {name: idx for idx, name in enumerate(MODEL_REGISTRY.keys())}
+
+    if not ordered_keys:
+        output_path = output_dir / "master_report.md"
+        output_path.write_text("\n".join(lines + ["실행된 배치가 없어 통합 리포트를 생성하지 못했습니다."]) + "\n", encoding="utf-8")
+        return output_path
+
+    for idx, experiment_key in enumerate(ordered_keys, start=1):
+        dataset_map = grouped[experiment_key]
+        summary_frames = [result.summary_df.copy() for result in dataset_map.values()]
+        group_df = pd.concat(summary_frames, ignore_index=True) if summary_frames else pd.DataFrame()
+        all_success = group_df[group_df["status"] != "failed"].copy() if not group_df.empty else pd.DataFrame()
+        any_result = next(iter(dataset_map.values()))
+        best_frames = [load_best_model_summary(result.batch_dir) for result in dataset_map.values()]
+        non_empty_best_frames = [df for df in best_frames if not df.empty]
+        best_df = pd.concat(non_empty_best_frames, ignore_index=True) if non_empty_best_frames else pd.DataFrame()
+        baseline_best_df = None
+        if experiment_key != baseline_key and baseline_key in grouped:
+            baseline_frames = [load_best_model_summary(result.batch_dir) for result in grouped[baseline_key].values()]
+            non_empty_baseline_frames = [df for df in baseline_frames if not df.empty]
+            baseline_best_df = (
+                pd.concat(non_empty_baseline_frames, ignore_index=True) if non_empty_baseline_frames else pd.DataFrame()
+            )
+
+        if not best_df.empty:
+            best_df["dataset_order"] = best_df["dataset"].map(dataset_order).fillna(99)
+            best_df["mode_order"] = best_df["mode"].map(mode_order).fillna(99)
+            best_df = best_df.sort_values(["dataset_order", "mode_order"]).drop(
+                columns=["dataset_order", "mode_order"]
+            )
+
+        methodology_parts = []
+        for dataset in ["daily", "weekly"]:
+            if dataset not in dataset_map:
+                continue
+            result = dataset_map[dataset]
+            successful = result.summary_df[result.summary_df["status"] != "failed"]
+            horizon = int(successful["horizon"].iloc[0]) if not successful.empty else ""
+            loss_name = str(successful["loss_name"].iloc[0]).upper() if not successful.empty else "default"
+            scaler_name = str(successful["scaler_type"].iloc[0]) if not successful.empty else "default"
+            methodology_parts.append(
+                f"{_dataset_label(dataset)} horizon={horizon}, loss={loss_name}, scaler={scaler_name}"
+            )
+        methodology_text = ", ".join(methodology_parts)
+        methodology_suffix = (
+            "단변량은 target-only, 다변량은 single-target + historical exogenous features 구조로 비교했습니다."
+        )
+        if experiment_key == "mse_scaled_regularized":
+            methodology_text += ", ReVIN + weight decay/dropout/model downsizing"
+        else:
+            methodology_text += ", MSE + scheduler + early stopping"
+        methodology_text = f"{methodology_text}. {methodology_suffix}"
+
+        lines.extend(
+            [
+                f"## 실험 {idx}. {company_experiment_title(experiment_key)}",
+                "",
+                "- 예측 타깃: WTI proxy (Com_CrudeOil)",
+                f"- 모델 종류: {', '.join(any_result.batch_config.get('models', []))}",
+                f"- 실험 방법론({experiment_key}): {methodology_text}",
+            ]
+        )
+
+        for dataset in ["daily", "weekly"]:
+            if dataset not in dataset_map:
+                continue
+            result = dataset_map[dataset]
+            successful = result.summary_df[result.summary_df["status"] != "failed"]
+            if successful.empty:
+                continue
+            row = successful.iloc[0]
+            lines.append(
+                "- 실제 날짜 세팅: "
+                f"{_dataset_label(dataset)} / "
+                f"Train {_date_text(row.get('train_start_date'))} ~ {_date_text(row.get('train_end_date'))}, "
+                f"Val {_date_text(row.get('val_start_date'))} ~ {_date_text(row.get('val_end_date'))}, "
+                f"Test {_date_text(row.get('test_start_date'))} ~ {_date_text(row.get('test_end_date'))}"
+            )
+
+        for dataset in ["daily", "weekly"]:
+            if best_df.empty or dataset not in set(best_df["dataset"]):
+                continue
+            for line in summarize_dataset_result_line(best_df, dataset, baseline_best_df):
+                lines.append(f"- 주요 실험 결과: {line}")
+
+        insight_lines: List[str] = []
+        for dataset in ["daily", "weekly"]:
+            if dataset in dataset_map:
+                insight_lines.extend(summarize_dataset_insights(best_df, dataset_map[dataset].summary_df, dataset))
+        for insight in insight_lines[:6]:
+            lines.append(f"- 내가 생각한 인사이트: {insight}")
+
+        if "weekly" in dataset_map:
+            result = dataset_map["weekly"]
+            weekly_rows = result.summary_df[result.summary_df["status"] != "failed"].copy()
+            if not weekly_rows.empty:
+                weekly_rows["mode_order"] = weekly_rows["mode"].map(mode_order).fillna(99)
+                weekly_rows["model_order"] = weekly_rows["model"].map(model_order).fillna(99)
+                weekly_rows = weekly_rows.sort_values(["mode_order", "model_order"]).drop(
+                    columns=["mode_order", "model_order"]
+                )
+            lines.extend(["", "## Weekly Loss Curve", ""])
+            for mode in ["univariate", "multivariate"]:
+                mode_rows = weekly_rows[weekly_rows["mode"] == mode].copy()
+                lines.extend(["", f"### {_mode_label(mode)} 모델별 그래프", ""])
+                for _, row in mode_rows.iterrows():
+                    loss_curve_path = Path(str(row["artifact_dir"])) / "loss_curve.png"
+                    if loss_curve_path.exists():
+                        alt_text = f"{row['run_name']} loss curve"
+                        lines.append(f"- {row['model']}: {_markdown_image(loss_curve_path, alt_text)}")
+
+        if "daily" in dataset_map:
+            result = dataset_map["daily"]
+            daily_rows = result.summary_df[result.summary_df["status"] != "failed"].copy()
+            if not daily_rows.empty:
+                daily_rows["mode_order"] = daily_rows["mode"].map(mode_order).fillna(99)
+                daily_rows["model_order"] = daily_rows["model"].map(model_order).fillna(99)
+                daily_rows = daily_rows.sort_values(["mode_order", "model_order"]).drop(
+                    columns=["mode_order", "model_order"]
+                )
+            lines.extend(["", "## Daily Loss Curve", ""])
+            for mode in ["univariate", "multivariate"]:
+                mode_rows = daily_rows[daily_rows["mode"] == mode].copy()
+                lines.extend(["", f"### {_mode_label(mode)} 모델별 그래프", ""])
+                for _, row in mode_rows.iterrows():
+                    loss_curve_path = Path(str(row["artifact_dir"])) / "loss_curve.png"
+                    if loss_curve_path.exists():
+                        alt_text = f"{row['run_name']} loss curve"
+                        lines.append(f"- {row['model']}: {_markdown_image(loss_curve_path, alt_text)}")
+
+        if "daily" in dataset_map:
+            best_daily = best_df[best_df["dataset"] == "daily"]
+            horizon = int(best_daily["horizon"].iloc[0]) if not best_daily.empty else ""
+            comp_path = dataset_map["daily"].batch_dir / "daily_actual_vs_uni_multi.png"
+            if comp_path.exists():
+                lines.extend(
+                    [
+                        "",
+                        f"## Daily 실제값 vs 예측값 (horizon {horizon})",
+                        "",
+                        f"- actual vs uni vs multi: {_markdown_image(comp_path, 'daily actual vs uni vs multi')}",
+                    ]
+                )
+
+        if "weekly" in dataset_map:
+            best_weekly = best_df[best_df["dataset"] == "weekly"]
+            horizon = int(best_weekly["horizon"].iloc[0]) if not best_weekly.empty else ""
+            comp_path = dataset_map["weekly"].batch_dir / "weekly_actual_vs_uni_multi.png"
+            if comp_path.exists():
+                lines.extend(
+                    [
+                        "",
+                        f"## Weekly 실제값 vs 예측값 (horizon {horizon})",
+                        "",
+                        f"- actual vs uni vs multi: {_markdown_image(comp_path, 'weekly actual vs uni vs multi')}",
+                    ]
+                )
+
+        lines.extend(["", "## 지표 요약", ""])
+        if not best_df.empty:
+            metrics_cols = [
+                "dataset",
+                "mode",
+                "best_model",
+                "MAE",
+                "RMSE",
+                "MAPE",
+                "sMAPE",
+                "min_val_loss",
+                "final_val_loss",
+            ]
+            metrics_df = best_df[metrics_cols].copy()
+            metrics_df["dataset_order"] = metrics_df["dataset"].map(dataset_order).fillna(99)
+            metrics_df["mode_order"] = metrics_df["mode"].map(mode_order).fillna(99)
+            metrics_df = metrics_df.sort_values(["dataset_order", "mode_order"]).drop(
+                columns=["dataset_order", "mode_order"]
+            )
+            for col in ["MAE", "RMSE", "MAPE", "sMAPE", "min_val_loss", "final_val_loss"]:
+                metrics_df[col] = metrics_df[col].map(lambda x: _float_text(x, digits=6))
+            lines.append(dataframe_to_markdown_table(metrics_df))
+        else:
+            lines.append("요약 가능한 성공 run이 없습니다.")
+
+        conclusion = build_company_conclusion_sections(all_success, best_df, baseline_best_df)
+        lines.extend(["", "## 결론 및 향후 계획", "", "### 현재 상태"])
+        for sentence in conclusion["current_status"][:4]:
+            lines.append(f"- {sentence}")
+        lines.extend(["", "### 의미"])
+        for sentence in conclusion["meaning"][:4]:
+            lines.append(f"- {sentence}")
+        lines.extend(["", "### 다음 액션"])
+        for sentence in conclusion["next_action"][:4]:
+            lines.append(f"- {sentence}")
+        if idx != len(ordered_keys):
+            lines.extend(["", "---", ""])
+
+    output_path = output_dir / "master_report.md"
+    output_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return output_path
+
+
 def run_single_experiment(
     repo_root: Path,
     batch_cfg: Dict[str, Any],
@@ -1406,4 +1767,5 @@ def run_batch_from_config(
         summary_df=summary_df,
         report_html=report_html,
         report_markdown=report_markdown,
+        batch_config=batch_cfg,
     )
