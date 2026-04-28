@@ -2,7 +2,7 @@
 
 [Start Here in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/notebooks/overnight_wti_baseline_runner.ipynb)
 
-[Weekly Review in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/notebooks/weekly_wti_review_runner.ipynb)
+[WTI Review in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/notebooks/weekly_wti_review_runner.ipynb)
 
 This repository is structured for one main purpose:
 
@@ -19,22 +19,22 @@ This repository is structured for one main purpose:
 5. If the smoke batch finishes cleanly, switch back to `configs/batches/overnight_wti_baseline.yaml` and start the real overnight run.
 6. In the morning, read the saved batch summary and the per-run plots.
 
-## Weekly Review Workflow
+## WTI Review Workflow
 
 1. Open [notebooks/weekly_wti_review_runner.ipynb](/Users/jaeholee/Desktop/newoil/notebooks/weekly_wti_review_runner.ipynb).
 2. If you received an updated weekly CSV, upload it to Google Drive and set `UPDATED_WEEKLY_DATA_SOURCE_PATH`.
-3. Leave the default `BATCH_CONFIG_RELATIVE_PATHS` as-is for the company-facing two-run plan:
-   `weekly_wti_h2_mse_report.yaml` and `weekly_wti_h2_mse_scaled_regularized.yaml`.
+3. Leave the default `BATCH_CONFIG_RELATIVE_PATHS` as-is for the company-facing four-run plan:
+   `daily_wti_h12_mse_report.yaml`, `daily_wti_h12_mse_scaled_regularized.yaml`, `weekly_wti_h2_mse_report.yaml`, and `weekly_wti_h2_mse_scaled_regularized.yaml`.
 4. Run the notebook from top to bottom.
-5. Read `weekly_review_combined_summary.csv` plus each batch `report.html` to see which change improved the issue.
+5. Read `wti_review_combined_summary.csv` plus each batch `report.html` to see which change improved the issue.
 
 ## Local VSCode Workflow
 
 1. Install the runtime once in your selected VSCode interpreter:
-   `pip install "git+https://github.com/Nixtla/neuralforecast.git" pandas matplotlib openpyxl pyyaml`
-2. Open the repo in VSCode and run the task `Run Weekly Company Plan`.
-3. The task auto-detects `gpu`, `mps`, or `cpu` and runs the same two-batch company plan locally.
-4. Read `outputs/weekly_company_plan_*/combined_summary.csv` and each batch `report.html`.
+   `pip install neuralforecast==3.1.7 pandas matplotlib openpyxl pyyaml`
+2. Open the repo in VSCode and run the task `Run Company Plan`.
+3. The task auto-detects `gpu`, `mps`, or `cpu` and runs the same daily+weekly company plan locally.
+4. Read `outputs/company_plan_*/combined_summary.csv` and each batch `report.html`.
 
 The default overnight batch is:
 

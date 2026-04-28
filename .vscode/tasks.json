@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Run Weekly Company Plan",
+      "label": "Run Company Plan",
       "type": "shell",
       "command": "${command:python.interpreterPath}",
       "args": [

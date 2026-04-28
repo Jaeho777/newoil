@@ -15,6 +15,8 @@ import yaml
 
 
 DEFAULT_BATCH_CONFIGS = [
+    "configs/batches/daily_wti_h12_mse_report.yaml",
+    "configs/batches/daily_wti_h12_mse_scaled_regularized.yaml",
     "configs/batches/weekly_wti_h2_mse_report.yaml",
     "configs/batches/weekly_wti_h2_mse_scaled_regularized.yaml",
 ]
@@ -62,13 +64,13 @@ def run_plan(repo_root: Path, batch_configs: List[Path], output_root: Path) -> P
     print(f"Detected accelerator: {accelerator} / devices={devices}")
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    plan_root = output_root / f"weekly_company_plan_{timestamp}"
+    plan_root = output_root / f"company_plan_{timestamp}"
     plan_root.mkdir(parents=True, exist_ok=True)
 
     combined_rows = []
     manifest_rows = []
 
-    with TemporaryDirectory(prefix="weekly_company_plan_") as tmp_dir:
+    with TemporaryDirectory(prefix="company_plan_") as tmp_dir:
         tmp_root = Path(tmp_dir)
         for batch_path in batch_configs:
             source_path = batch_path if batch_path.is_absolute() else (repo_root / batch_path).resolve()
@@ -119,14 +121,14 @@ def run_plan(repo_root: Path, batch_configs: List[Path], output_root: Path) -> P
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the company-facing weekly two-run plan locally.")
+    parser = argparse.ArgumentParser(description="Run the company-facing daily+weekly plan locally.")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--output-root", type=Path, default=Path.cwd() / "outputs")
     parser.add_argument(
         "--batch-config",
         action="append",
         dest="batch_configs",
-        help="Batch config path to include. Pass multiple times. Defaults to the report + scaled_regularized pair.",
+        help="Batch config path to include. Pass multiple times. Defaults to daily+weekly report and scaled_regularized runs.",
     )
     args = parser.parse_args()
 

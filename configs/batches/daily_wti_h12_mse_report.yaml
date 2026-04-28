@@ -1,0 +1,65 @@
+name: "daily_wti_h12_mse_report"
+description: "Daily uni vs multi comparison with horizon 12, MSE loss, scheduler, and reporting notes."
+start_date: "2011-01-01"
+feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
+
+runtime:
+  random_seed: 1
+
+models:
+  - "GRU"
+  - "TimeXer"
+  - "iTransformer"
+
+dataset_refs:
+  daily: "configs/papers_raw.yaml"
+
+training_defaults:
+  input_size: 64
+  batch_size: 32
+  valid_batch_size: 8
+  windows_batch_size: null
+  inference_windows_batch_size: -1
+  max_steps: 1000000
+  scaler_type: "revin"
+  val_check_steps: 1
+  early_stop_patience_steps: 8
+  model_step_size: 1
+  loss: "mse"
+  learning_rate: 0.0001
+  optimizer:
+    name: "adamw"
+    kwargs: {}
+  lr_scheduler:
+    name: "ReduceLROnPlateau"
+    mode: "min"
+    factor: 0.5
+    patience: 3
+    threshold: 0.001
+    threshold_mode: "rel"
+    cooldown: 0
+    min_lr: 0.0
+    eps: 1.0e-06
+  trainer_kwargs:
+    enable_checkpointing: false
+    max_epochs: 200
+
+report:
+  lookback_plot: 120
+  loss_scale: "linear"
+  x_axis: "epoch"
+
+scenarios:
+  - name: "uni_daily_h12"
+    dataset: "daily"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+
+  - name: "multi_daily_h12"
+    dataset: "daily"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
