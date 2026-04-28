@@ -450,6 +450,7 @@ def build_common_model_kwargs(
     trainer_kwargs = training_cfg.get("trainer_kwargs") or {}
     for key, value in trainer_kwargs.items():
         kwargs[key] = value
+    kwargs.setdefault("logger", False)
 
     model_kwargs = training_cfg.get("model_kwargs") or {}
     for key, value in model_kwargs.items():
@@ -1130,6 +1131,8 @@ def summarize_dataset_result_line(
     dataset: str,
     baseline_df: Optional[pd.DataFrame] = None,
 ) -> List[str]:
+    if best_df.empty or "dataset" not in best_df.columns:
+        return [f"{_dataset_label(dataset)} 결과를 요약할 성공 run이 없습니다."]
     rows = best_df[best_df["dataset"] == dataset].copy()
     if rows.empty:
         return [f"{_dataset_label(dataset)} 결과를 요약할 성공 run이 없습니다."]
@@ -1183,7 +1186,10 @@ def summarize_dataset_result_line(
 
 
 def summarize_dataset_insights(best_df: pd.DataFrame, summary_df: pd.DataFrame, dataset: str) -> List[str]:
-    rows = best_df[best_df["dataset"] == dataset].copy()
+    if best_df.empty or "dataset" not in best_df.columns:
+        rows = pd.DataFrame()
+    else:
+        rows = best_df[best_df["dataset"] == dataset].copy()
     dataset_rows = summary_df[(summary_df["dataset"] == dataset) & (summary_df["status"] != "failed")].copy()
     lines: List[str] = []
     if not rows.empty:
@@ -1391,7 +1397,11 @@ def build_company_master_report(batch_results: List[BatchResult], output_dir: Pa
                         lines.append(f"- {row['model']}: {_markdown_image(loss_curve_path, alt_text)}")
 
         if "daily" in dataset_map:
-            best_daily = best_df[best_df["dataset"] == "daily"]
+            best_daily = (
+                best_df[best_df["dataset"] == "daily"].copy()
+                if (not best_df.empty and "dataset" in best_df.columns)
+                else pd.DataFrame()
+            )
             horizon = int(best_daily["horizon"].iloc[0]) if not best_daily.empty else ""
             comp_path = dataset_map["daily"].batch_dir / "daily_actual_vs_uni_multi.png"
             if comp_path.exists():
@@ -1405,7 +1415,11 @@ def build_company_master_report(batch_results: List[BatchResult], output_dir: Pa
                 )
 
         if "weekly" in dataset_map:
-            best_weekly = best_df[best_df["dataset"] == "weekly"]
+            best_weekly = (
+                best_df[best_df["dataset"] == "weekly"].copy()
+                if (not best_df.empty and "dataset" in best_df.columns)
+                else pd.DataFrame()
+            )
             horizon = int(best_weekly["horizon"].iloc[0]) if not best_weekly.empty else ""
             comp_path = dataset_map["weekly"].batch_dir / "weekly_actual_vs_uni_multi.png"
             if comp_path.exists():
