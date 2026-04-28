@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import traceback
+import inspect
+import warnings
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +17,7 @@ import pandas as pd
 import torch
 import yaml
 from neuralforecast import NeuralForecast
+from neuralforecast.common._base_model import BaseModel
 from neuralforecast.losses.pytorch import MAE, MSE
 from neuralforecast.models import GRU, TimeXer, iTransformer
 
@@ -38,6 +41,57 @@ OPTIMIZER_REGISTRY = {
 LR_SCHEDULER_REGISTRY = {
     "reducelronplateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
 }
+
+
+def patch_neuralforecast_reduce_on_plateau_monitor() -> None:
+    if getattr(BaseModel.configure_optimizers, "_newoil_patched", False):
+        return
+
+    def configure_optimizers(self):
+        if self.optimizer:
+            optimizer_signature = inspect.signature(self.optimizer)
+            optimizer_kwargs = deepcopy(self.optimizer_kwargs)
+            if "lr" in optimizer_signature.parameters:
+                if "lr" in optimizer_kwargs:
+                    warnings.warn(
+                        "ignoring learning rate passed in optimizer_kwargs, using the model's learning rate"
+                    )
+                optimizer_kwargs["lr"] = self.learning_rate
+            optimizer = self.optimizer(params=self.parameters(), **optimizer_kwargs)
+        else:
+            if self.optimizer_kwargs:
+                warnings.warn("ignoring optimizer_kwargs as the optimizer is not specified")
+            optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+
+        lr_scheduler = {"frequency": 1, "interval": "step"}
+        if self.lr_scheduler:
+            lr_scheduler_signature = inspect.signature(self.lr_scheduler)
+            lr_scheduler_kwargs = deepcopy(self.lr_scheduler_kwargs)
+            if "optimizer" in lr_scheduler_signature.parameters and "optimizer" in lr_scheduler_kwargs:
+                warnings.warn("ignoring optimizer passed in lr_scheduler_kwargs, using the model's optimizer")
+                del lr_scheduler_kwargs["optimizer"]
+            if "optimizer" in lr_scheduler_signature.parameters:
+                lr_scheduler["scheduler"] = self.lr_scheduler(optimizer=optimizer, **lr_scheduler_kwargs)
+            else:
+                lr_scheduler["scheduler"] = self.lr_scheduler(**lr_scheduler_kwargs)
+
+            if issubclass(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                lr_scheduler["monitor"] = self.val_monitor
+        else:
+            if self.lr_scheduler_kwargs:
+                warnings.warn("ignoring lr_scheduler_kwargs as the lr_scheduler is not specified")
+            lr_scheduler["scheduler"] = torch.optim.lr_scheduler.StepLR(
+                optimizer=optimizer,
+                step_size=self.lr_decay_steps,
+                gamma=0.5,
+            )
+        return {"optimizer": optimizer, "lr_scheduler": lr_scheduler}
+
+    configure_optimizers._newoil_patched = True
+    BaseModel.configure_optimizers = configure_optimizers
+
+
+patch_neuralforecast_reduce_on_plateau_monitor()
 
 
 @dataclass
