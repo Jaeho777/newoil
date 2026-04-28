@@ -468,12 +468,30 @@ def build_common_model_kwargs(
 def save_loss_history(model, run_dir: Path) -> pd.DataFrame:
     train_df = pd.DataFrame(model.train_trajectories, columns=["step", "train_loss"])
     valid_df = pd.DataFrame(model.valid_trajectories, columns=["step", "valid_loss"])
-    history_df = train_df.merge(valid_df, on="step", how="outer").sort_values("step")
+    train_df["log_index"] = np.arange(1, len(train_df) + 1)
+    valid_df["log_index"] = np.arange(1, len(valid_df) + 1)
+
+    history_df = train_df.merge(valid_df, on="log_index", how="outer", suffixes=("_train", "_valid"))
+    train_step_col = "step_train" if "step_train" in history_df.columns else None
+    valid_step_col = "step_valid" if "step_valid" in history_df.columns else None
+    if train_step_col and valid_step_col:
+        history_df["step"] = history_df[train_step_col].combine_first(history_df[valid_step_col])
+    elif train_step_col:
+        history_df["step"] = history_df[train_step_col]
+    elif valid_step_col:
+        history_df["step"] = history_df[valid_step_col]
+    else:
+        history_df["step"] = history_df["log_index"].astype(float)
+
     final_epoch_index = getattr(model, "current_epoch", None)
-    max_logged_step = pd.to_numeric(history_df["step"], errors="coerce").dropna().max()
-    if final_epoch_index is not None and pd.notna(max_logged_step) and float(max_logged_step) > 0:
+    if final_epoch_index is not None and not history_df.empty:
         completed_epochs = float(final_epoch_index) + 1.0
-        history_df["epoch"] = history_df["step"].astype(float) * (completed_epochs / float(max_logged_step))
+        history_df["epoch"] = np.linspace(1.0, completed_epochs, num=len(history_df))
+
+    drop_cols = [column for column in ["step_train", "step_valid"] if column in history_df.columns]
+    if drop_cols:
+        history_df = history_df.drop(columns=drop_cols)
+
     history_df.to_csv(run_dir / "loss_history.csv", index=False)
     return history_df
 
