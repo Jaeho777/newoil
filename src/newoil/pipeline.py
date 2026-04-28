@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
+import sys
 import traceback
 import inspect
+import types
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass
@@ -16,6 +19,96 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
+
+
+class _RayTunePlaceholder:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.args = args
+        self.kwargs = kwargs
+
+    def __call__(self, *args: Any, **kwargs: Any) -> "_RayTunePlaceholder":
+        return _RayTunePlaceholder(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> "_RayTunePlaceholder":
+        return _RayTunePlaceholder(name)
+
+
+class _UnavailableRayClass:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise ImportError(
+            "ray[tune] is required only for NeuralForecast Auto models. "
+            "This pipeline uses fixed GRU/TimeXer/iTransformer models, so install "
+            "ray[tune] only if you explicitly run Auto models."
+        )
+
+
+def patch_missing_ray_for_neuralforecast_import() -> None:
+    if "ray" in sys.modules:
+        return
+    try:
+        ray_spec = importlib.util.find_spec("ray")
+    except ValueError:
+        ray_spec = None
+    if ray_spec is not None:
+        return
+
+    ray_module = types.ModuleType("ray")
+    air_module = types.ModuleType("ray.air")
+    tune_module = types.ModuleType("ray.tune")
+    tune_integration_module = types.ModuleType("ray.tune.integration")
+    tune_pl_module = types.ModuleType("ray.tune.integration.pytorch_lightning")
+    tune_search_module = types.ModuleType("ray.tune.search")
+    basic_variant_module = types.ModuleType("ray.tune.search.basic_variant")
+    for module in (ray_module, tune_module, tune_integration_module, tune_search_module):
+        module.__path__ = []  # type: ignore[attr-defined]
+
+    def placeholder_factory(*args: Any, **kwargs: Any) -> _RayTunePlaceholder:
+        return _RayTunePlaceholder(*args, **kwargs)
+
+    def module_getattr(name: str) -> _RayTunePlaceholder:
+        return _RayTunePlaceholder(name)
+
+    for module in (ray_module, air_module, tune_module):
+        module.__getattr__ = module_getattr  # type: ignore[attr-defined]
+
+    for attr in (
+        "choice",
+        "grid_search",
+        "lograndint",
+        "loguniform",
+        "qlograndint",
+        "qloguniform",
+        "qrandint",
+        "quniform",
+        "randint",
+        "sample_from",
+        "uniform",
+    ):
+        setattr(tune_module, attr, placeholder_factory)
+
+    air_module.RunConfig = _RayTunePlaceholder
+    tune_module.TuneConfig = _RayTunePlaceholder
+    tune_pl_module.TuneReportCallback = _UnavailableRayClass
+    basic_variant_module.BasicVariantGenerator = _UnavailableRayClass
+
+    ray_module.air = air_module
+    ray_module.tune = tune_module
+    tune_module.integration = tune_integration_module
+    tune_module.search = tune_search_module
+    tune_integration_module.pytorch_lightning = tune_pl_module
+    tune_search_module.basic_variant = basic_variant_module
+
+    sys.modules.setdefault("ray", ray_module)
+    sys.modules.setdefault("ray.air", air_module)
+    sys.modules.setdefault("ray.tune", tune_module)
+    sys.modules.setdefault("ray.tune.integration", tune_integration_module)
+    sys.modules.setdefault("ray.tune.integration.pytorch_lightning", tune_pl_module)
+    sys.modules.setdefault("ray.tune.search", tune_search_module)
+    sys.modules.setdefault("ray.tune.search.basic_variant", basic_variant_module)
+
+
+patch_missing_ray_for_neuralforecast_import()
+
 from neuralforecast import NeuralForecast
 from neuralforecast.common._base_model import BaseModel
 from neuralforecast.losses.pytorch import MAE, MSE
