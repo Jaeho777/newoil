@@ -106,25 +106,11 @@ def patch_missing_ray_for_neuralforecast_import() -> None:
     sys.modules.setdefault("ray.tune.search", tune_search_module)
     sys.modules.setdefault("ray.tune.search.basic_variant", basic_variant_module)
 
-
-patch_missing_ray_for_neuralforecast_import()
-
-from neuralforecast import NeuralForecast
-from neuralforecast.common._base_model import BaseModel
-from neuralforecast.losses.pytorch import MAE, MSE
-from neuralforecast.models import GRU, TimeXer, iTransformer
-
-
-MODEL_REGISTRY = {
-    "GRU": GRU,
-    "TimeXer": TimeXer,
-    "iTransformer": iTransformer,
-}
-
-LOSS_REGISTRY = {
-    "mae": MAE,
-    "mse": MSE,
-}
+NeuralForecast = None
+BaseModel = None
+MODEL_REGISTRY = {"GRU": None, "TimeXer": None, "iTransformer": None}
+LOSS_REGISTRY = {"mae": None, "mse": None}
+_NEURALFORECAST_RUNTIME_READY = False
 
 OPTIMIZER_REGISTRY = {
     "adam": torch.optim.Adam,
@@ -137,6 +123,8 @@ LR_SCHEDULER_REGISTRY = {
 
 
 def patch_neuralforecast_reduce_on_plateau_monitor() -> None:
+    if BaseModel is None:
+        raise RuntimeError("NeuralForecast runtime has not been loaded yet.")
     if getattr(BaseModel.configure_optimizers, "_newoil_patched", False):
         return
 
@@ -184,7 +172,36 @@ def patch_neuralforecast_reduce_on_plateau_monitor() -> None:
     BaseModel.configure_optimizers = configure_optimizers
 
 
-patch_neuralforecast_reduce_on_plateau_monitor()
+def ensure_neuralforecast_runtime() -> None:
+    global BaseModel
+    global LOSS_REGISTRY
+    global MODEL_REGISTRY
+    global NeuralForecast
+    global _NEURALFORECAST_RUNTIME_READY
+
+    if _NEURALFORECAST_RUNTIME_READY:
+        return
+
+    patch_missing_ray_for_neuralforecast_import()
+
+    from neuralforecast import NeuralForecast as NeuralForecastCls
+    from neuralforecast.common._base_model import BaseModel as BaseModelCls
+    from neuralforecast.losses.pytorch import MAE, MSE
+    from neuralforecast.models import GRU, TimeXer, iTransformer
+
+    NeuralForecast = NeuralForecastCls
+    BaseModel = BaseModelCls
+    MODEL_REGISTRY = {
+        "GRU": GRU,
+        "TimeXer": TimeXer,
+        "iTransformer": iTransformer,
+    }
+    LOSS_REGISTRY = {
+        "mae": MAE,
+        "mse": MSE,
+    }
+    patch_neuralforecast_reduce_on_plateau_monitor()
+    _NEURALFORECAST_RUNTIME_READY = True
 
 
 @dataclass
@@ -470,6 +487,7 @@ def assert_no_leakage_risk(
 def loss_name_to_instance(loss_name: Optional[str]):
     if loss_name is None:
         return None
+    ensure_neuralforecast_runtime()
     key = str(loss_name).lower()
     if key not in LOSS_REGISTRY:
         raise ValueError(f"Unsupported loss: {loss_name}")
@@ -1633,6 +1651,7 @@ def run_single_experiment(
     model_name: str,
     run_dir: Path,
 ) -> Dict[str, Any]:
+    ensure_neuralforecast_runtime()
     selection = select_columns(feature_manifest, scenario_cfg["dataset"], scenario_cfg["mode"])
     target_column = selection["target_column"]
     selected_columns = selection["selected_columns"]
