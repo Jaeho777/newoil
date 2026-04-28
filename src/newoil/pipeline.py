@@ -237,6 +237,7 @@ def prepare_panel(
     repo_root: Path,
     dataset_cfg: Dict[str, Any],
     selected_columns: List[str],
+    target_column: str,
     start_date: str,
     preprocess_cfg: Dict[str, Any],
 ) -> pd.DataFrame:
@@ -263,12 +264,16 @@ def prepare_panel(
         panel.index.name = "ds"
 
     fill_method = preprocess_cfg.get("fill_method")
+    feature_columns = [column for column in panel.columns if column != target_column]
     if fill_method == "ffill":
-        panel = panel.ffill()
+        if feature_columns:
+            panel[feature_columns] = panel[feature_columns].ffill()
     elif fill_method == "bfill":
-        panel = panel.bfill()
+        if feature_columns:
+            panel[feature_columns] = panel[feature_columns].bfill()
     elif fill_method == "ffill_bfill":
-        panel = panel.ffill().bfill()
+        if feature_columns:
+            panel[feature_columns] = panel[feature_columns].ffill().bfill()
     elif fill_method in (None, "none"):
         pass
     else:
@@ -1117,6 +1122,7 @@ def run_single_experiment(
         repo_root=repo_root,
         dataset_cfg=dataset_cfg,
         selected_columns=selected_columns,
+        target_column=target_column,
         start_date=batch_cfg["start_date"],
         preprocess_cfg=preprocess_cfg,
     )
