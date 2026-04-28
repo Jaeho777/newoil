@@ -176,6 +176,7 @@ def resolve_epoch_compatible_training_cfg(
     if max_epochs is None:
         return resolved
 
+    requested_max_epochs = int(max_epochs)
     steps_per_epoch = estimate_steps_per_epoch(
         train_length=train_length,
         input_size=input_size,
@@ -183,7 +184,7 @@ def resolve_epoch_compatible_training_cfg(
         n_series=n_series,
         training_cfg=resolved,
     )
-    epoch_equivalent_max_steps = int(max_epochs) * steps_per_epoch
+    epoch_equivalent_max_steps = requested_max_epochs * steps_per_epoch
 
     current_max_steps = resolved.get("max_steps")
     if current_max_steps is None:
@@ -192,6 +193,7 @@ def resolve_epoch_compatible_training_cfg(
         resolved["max_steps"] = min(int(current_max_steps), epoch_equivalent_max_steps)
 
     resolved["resolved_from_max_epochs"] = True
+    resolved["requested_max_epochs"] = requested_max_epochs
     resolved["estimated_steps_per_epoch"] = steps_per_epoch
     resolved["epoch_equivalent_max_steps"] = epoch_equivalent_max_steps
     resolved.pop("max_epochs", None)
@@ -465,11 +467,20 @@ def build_common_model_kwargs(
     return kwargs
 
 
-def save_loss_history(model, run_dir: Path) -> pd.DataFrame:
+def save_loss_history(
+    model,
+    run_dir: Path,
+    training_cfg: Optional[Dict[str, Any]] = None,
+) -> pd.DataFrame:
+    training_cfg = training_cfg or {}
+    steps_per_epoch = max(int(training_cfg.get("estimated_steps_per_epoch") or 1), 1)
+
     train_df = pd.DataFrame(model.train_trajectories, columns=["step", "train_loss"])
     valid_df = pd.DataFrame(model.valid_trajectories, columns=["step", "valid_loss"])
     train_df["log_index"] = np.arange(1, len(train_df) + 1)
     valid_df["log_index"] = np.arange(1, len(valid_df) + 1)
+    train_df["epoch"] = derive_loss_epoch_axis(train_df, steps_per_epoch)
+    valid_df["epoch"] = derive_loss_epoch_axis(valid_df, steps_per_epoch)
 
     history_df = train_df.merge(valid_df, on="log_index", how="outer", suffixes=("_train", "_valid"))
     train_step_col = "step_train" if "step_train" in history_df.columns else None
@@ -483,17 +494,41 @@ def save_loss_history(model, run_dir: Path) -> pd.DataFrame:
     else:
         history_df["step"] = history_df["log_index"].astype(float)
 
-    final_epoch_index = getattr(model, "current_epoch", None)
-    if final_epoch_index is not None and not history_df.empty:
-        completed_epochs = float(final_epoch_index) + 1.0
-        history_df["epoch"] = np.linspace(1.0, completed_epochs, num=len(history_df))
+    train_epoch_col = "epoch_train" if "epoch_train" in history_df.columns else None
+    valid_epoch_col = "epoch_valid" if "epoch_valid" in history_df.columns else None
+    if train_epoch_col and valid_epoch_col:
+        history_df["epoch"] = history_df[train_epoch_col].combine_first(history_df[valid_epoch_col])
+    elif train_epoch_col:
+        history_df["epoch"] = history_df[train_epoch_col]
+    elif valid_epoch_col:
+        history_df["epoch"] = history_df[valid_epoch_col]
+    else:
+        history_df["epoch"] = history_df["log_index"].astype(float)
 
-    drop_cols = [column for column in ["step_train", "step_valid"] if column in history_df.columns]
+    drop_cols = [
+        column
+        for column in ["step_train", "step_valid", "epoch_train", "epoch_valid"]
+        if column in history_df.columns
+    ]
     if drop_cols:
         history_df = history_df.drop(columns=drop_cols)
 
     history_df.to_csv(run_dir / "loss_history.csv", index=False)
     return history_df
+
+
+def derive_loss_epoch_axis(history_df: pd.DataFrame, steps_per_epoch: int) -> pd.Series:
+    if history_df.empty or "step" not in history_df.columns:
+        return pd.Series(dtype=float)
+
+    raw_step = pd.to_numeric(history_df["step"], errors="coerce")
+    has_usable_step_axis = raw_step.notna().sum() > 1 and raw_step.nunique(dropna=True) > 1
+    if has_usable_step_axis:
+        return raw_step / max(steps_per_epoch, 1)
+
+    # NeuralForecast can log repeated or reset step ids in some Colab/Lightning
+    # combinations. In that case the log order is the only reliable epoch axis.
+    return history_df["log_index"].astype(float)
 
 
 def plot_loss_curves(
@@ -503,6 +538,7 @@ def plot_loss_curves(
     y_scale: str = "linear",
     x_column: str = "step",
     x_label: str = "Global step",
+    x_max: Optional[float] = None,
 ) -> None:
     y_scale = str(y_scale or "linear").lower().strip()
     if y_scale not in {"linear", "log", "symlog"}:
@@ -544,6 +580,8 @@ def plot_loss_curves(
     ax.set_title(title)
     ax.set_xlabel(x_label)
     ax.set_ylabel("Loss")
+    if x_max is not None and math.isfinite(float(x_max)) and float(x_max) > 0:
+        ax.set_xlim(left=0, right=float(x_max))
     if plotted:
         ax.legend()
     fig.tight_layout()
@@ -1650,10 +1688,11 @@ def run_single_experiment(
     predictions_out.to_csv(run_dir / "predictions.csv", index=False)
 
     fitted_model = nf.models[0]
-    history_df = save_loss_history(fitted_model, run_dir)
+    history_df = save_loss_history(fitted_model, run_dir, training_cfg=training_cfg)
     diagnostics = diagnose_run(history_df)
     x_column = "epoch" if x_axis_mode == "epoch" and "epoch" in history_df.columns else "step"
     x_label = "Epoch" if x_column == "epoch" else "Global step"
+    x_max = training_cfg.get("requested_max_epochs") if x_column == "epoch" else None
     plot_loss_curves(
         history_df,
         f"{scenario_cfg['name']} - {model_name} loss curves",
@@ -1661,6 +1700,7 @@ def run_single_experiment(
         y_scale=loss_scale,
         x_column=x_column,
         x_label=x_label,
+        x_max=x_max,
     )
     plot_forecast(
         history_target=history_target,
