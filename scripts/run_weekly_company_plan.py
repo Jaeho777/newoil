@@ -15,10 +15,8 @@ import yaml
 
 
 DEFAULT_BATCH_CONFIGS = [
-    "configs/batches/daily_wti_h12_mse_report.yaml",
-    "configs/batches/daily_wti_h12_mse_scaled_regularized.yaml",
-    "configs/batches/weekly_wti_h2_mse_report.yaml",
-    "configs/batches/weekly_wti_h2_mse_scaled_regularized.yaml",
+    "configs/batches/company_wti_mse_report.yaml",
+    "configs/batches/company_wti_mse_scaled_regularized.yaml",
 ]
 
 

@@ -1103,7 +1103,7 @@ def build_markdown_report(
 
 
 def normalize_company_experiment_key(batch_name: str) -> str:
-    for prefix in ["daily_wti_h12_", "weekly_wti_h2_"]:
+    for prefix in ["daily_wti_h12_", "weekly_wti_h2_", "company_wti_"]:
         if batch_name.startswith(prefix):
             return batch_name[len(prefix) :]
     return batch_name
