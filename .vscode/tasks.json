@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Weekly Company Plan",
+      "type": "shell",
+      "command": "${command:python.interpreterPath}",
+      "args": [
+        "-m",
+        "scripts.run_weekly_company_plan",
+        "--repo-root",
+        "${workspaceFolder}",
+        "--output-root",
+        "${workspaceFolder}/outputs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

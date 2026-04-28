@@ -6,7 +6,7 @@ repo:
 
 data:
   format: "wide"
-  file_path: "data/papers_db_raw.csv"
+  file_path: "data/0428DB_daily.csv"
   sheet_name: 0
   freq: "D"
   time_col: "dt"

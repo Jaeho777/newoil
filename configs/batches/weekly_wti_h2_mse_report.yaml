@@ -1,0 +1,65 @@
+name: "weekly_wti_h2_mse_report"
+description: "Weekly uni vs multi comparison with horizon 2, MSE loss, scheduler, and reporting notes."
+start_date: "2011-01-01"
+feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
+
+runtime:
+  random_seed: 1
+
+models:
+  - "GRU"
+  - "TimeXer"
+  - "iTransformer"
+
+dataset_refs:
+  weekly: "configs/papers_weekly.yaml"
+
+training_defaults:
+  input_size: 64
+  batch_size: 32
+  valid_batch_size: 8
+  windows_batch_size: null
+  inference_windows_batch_size: -1
+  max_steps: 1000000
+  max_epochs: 200
+  scaler_type: "revin"
+  val_check_steps: 4
+  early_stop_patience_steps: 8
+  model_step_size: 1
+  loss: "mse"
+  learning_rate: 0.0001
+  optimizer:
+    name: "adamw"
+    kwargs: {}
+  lr_scheduler:
+    name: "ReduceLROnPlateau"
+    mode: "min"
+    factor: 0.5
+    patience: 3
+    threshold: 0.001
+    threshold_mode: "rel"
+    cooldown: 0
+    min_lr: 0.0
+    eps: 1.0e-06
+  trainer_kwargs:
+    enable_checkpointing: false
+
+report:
+  lookback_plot: 60
+  loss_scale: "linear"
+  x_axis: "epoch"
+
+scenarios:
+  - name: "uni_weekly_h2"
+    dataset: "weekly"
+    mode: "univariate"
+    horizon: 2
+    val_size: 16
+    test_size: 2
+
+  - name: "multi_weekly_h2"
+    dataset: "weekly"
+    mode: "multivariate"
+    horizon: 2
+    val_size: 16
+    test_size: 2

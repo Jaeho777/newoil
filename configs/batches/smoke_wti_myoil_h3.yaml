@@ -1,0 +1,66 @@
+name: "smoke_wti_myoil_h3"
+description: "Fast smoke test aligned to the earlier myoil horizon-3 baseline settings."
+start_date: "2011-01-01"
+feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
+
+runtime:
+  random_seed: 1
+  transformations_target: "log-diff"
+  transformations_exog: "diff"
+
+models:
+  - "GRU"
+  - "TimeXer"
+  - "iTransformer"
+
+dataset_refs:
+  daily: "configs/papers_raw.yaml"
+  weekly: "configs/papers_weekly.yaml"
+
+training_defaults:
+  input_size: 64
+  batch_size: 32
+  valid_batch_size: 8
+  windows_batch_size: null
+  inference_windows_batch_size: -1
+  max_steps: 12
+  scaler_type: "revin"
+  val_check_steps: 4
+  early_stop_patience_steps: 8
+  model_step_size: 1
+  loss: "mse"
+  optimizer:
+    name: "adamw"
+    kwargs: {}
+
+report:
+  lookback_plot: 60
+
+scenarios:
+  - name: "uni_daily_h3_smoke"
+    dataset: "daily"
+    mode: "univariate"
+    horizon: 3
+    val_size: 16
+    test_size: 3
+
+  - name: "uni_weekly_h3_smoke"
+    dataset: "weekly"
+    mode: "univariate"
+    horizon: 3
+    val_size: 16
+    test_size: 3
+
+  - name: "multi_daily_h3_smoke"
+    dataset: "daily"
+    mode: "multivariate"
+    horizon: 3
+    val_size: 16
+    test_size: 3
+
+  - name: "multi_weekly_h3_smoke"
+    dataset: "weekly"
+    mode: "multivariate"
+    horizon: 3
+    val_size: 16
+    test_size: 3

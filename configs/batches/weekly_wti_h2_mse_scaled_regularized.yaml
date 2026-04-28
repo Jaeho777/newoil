@@ -1,0 +1,85 @@
+name: "weekly_wti_h2_mse_scaled_regularized"
+description: "Weekly uni vs multi comparison with horizon 2, ReVIN scaling, and model-specific regularization/downsizing."
+start_date: "2011-01-01"
+feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
+
+runtime:
+  random_seed: 1
+
+models:
+  - "GRU"
+  - "TimeXer"
+  - "iTransformer"
+
+dataset_refs:
+  weekly: "configs/papers_weekly.yaml"
+
+training_defaults:
+  input_size: 64
+  batch_size: 32
+  valid_batch_size: 8
+  windows_batch_size: null
+  inference_windows_batch_size: -1
+  max_steps: 1000000
+  max_epochs: 200
+  scaler_type: "revin"
+  val_check_steps: 4
+  early_stop_patience_steps: 8
+  model_step_size: 1
+  loss: "mse"
+  learning_rate: 0.0001
+  optimizer:
+    name: "adamw"
+    kwargs:
+      weight_decay: 1.0e-04
+  lr_scheduler:
+    name: "ReduceLROnPlateau"
+    mode: "min"
+    factor: 0.5
+    patience: 3
+    threshold: 0.001
+    threshold_mode: "rel"
+    cooldown: 0
+    min_lr: 0.0
+    eps: 1.0e-06
+  trainer_kwargs:
+    enable_checkpointing: false
+
+model_training_overrides:
+  GRU:
+    model_kwargs:
+      encoder_hidden_size: 64
+      decoder_hidden_size: 64
+      encoder_dropout: 0.2
+  TimeXer:
+    model_kwargs:
+      hidden_size: 128
+      n_heads: 4
+      d_ff: 256
+      dropout: 0.2
+  iTransformer:
+    model_kwargs:
+      hidden_size: 128
+      n_heads: 4
+      d_ff: 256
+      dropout: 0.2
+
+report:
+  lookback_plot: 60
+  loss_scale: "linear"
+  x_axis: "epoch"
+
+scenarios:
+  - name: "uni_weekly_h2_scaled_regularized"
+    dataset: "weekly"
+    mode: "univariate"
+    horizon: 2
+    val_size: 16
+    test_size: 2
+
+  - name: "multi_weekly_h2_scaled_regularized"
+    dataset: "weekly"
+    mode: "multivariate"
+    horizon: 2
+    val_size: 16
+    test_size: 2

@@ -1,0 +1,56 @@
+name: "overnight_wti_short_window_log"
+description: "Short-window overnight WTI runs with log-scaled loss plots."
+start_date: "2011-01-01"
+feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
+
+runtime:
+  random_seed: 1
+
+models:
+  - "GRU"
+  - "TimeXer"
+  - "iTransformer"
+
+dataset_refs:
+  daily: "configs/papers_raw.yaml"
+  weekly: "configs/papers_weekly.yaml"
+
+training_defaults:
+  input_size: 16
+
+report:
+  lookback_plot: 120
+  loss_scale: "log"
+
+scenarios:
+  - name: "uni_daily_short_window"
+    dataset: "daily"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+
+  - name: "uni_weekly_short_window"
+    dataset: "weekly"
+    mode: "univariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+
+  - name: "multi_daily_short_window"
+    dataset: "daily"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
+
+  - name: "multi_weekly_short_window"
+    dataset: "weekly"
+    mode: "multivariate"
+    horizon: 12
+    val_size: 24
+    test_size: 12
+    transform: "none"
