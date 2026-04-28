@@ -164,6 +164,13 @@ def resolve_epoch_compatible_training_cfg(
     n_series: int,
 ) -> Dict[str, Any]:
     resolved = deepcopy(training_cfg)
+    trainer_kwargs = deepcopy(resolved.get("trainer_kwargs") or {})
+    trainer_max_epochs = trainer_kwargs.pop("max_epochs", None)
+    resolved["trainer_kwargs"] = trainer_kwargs
+
+    if resolved.get("max_epochs") is None and trainer_max_epochs is not None:
+        resolved["max_epochs"] = trainer_max_epochs
+
     max_epochs = resolved.get("max_epochs")
     if max_epochs is None:
         return resolved
@@ -186,6 +193,7 @@ def resolve_epoch_compatible_training_cfg(
     resolved["resolved_from_max_epochs"] = True
     resolved["estimated_steps_per_epoch"] = steps_per_epoch
     resolved["epoch_equivalent_max_steps"] = epoch_equivalent_max_steps
+    resolved.pop("max_epochs", None)
     return resolved
 
 
