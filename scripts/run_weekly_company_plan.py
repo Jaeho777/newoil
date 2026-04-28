@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -11,8 +12,6 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 import torch
 import yaml
-
-from newoil.pipeline import run_batch_from_config
 
 
 DEFAULT_BATCH_CONFIGS = [
@@ -53,6 +52,12 @@ def apply_runtime_overrides(batch_cfg: Dict[str, Any], accelerator: str, devices
 
 
 def run_plan(repo_root: Path, batch_configs: List[Path], output_root: Path) -> Path:
+    src_root = repo_root / "src"
+    if str(src_root) not in sys.path:
+        sys.path.insert(0, str(src_root))
+
+    from newoil.pipeline import run_batch_from_config
+
     accelerator, devices = detect_accelerator()
     print(f"Detected accelerator: {accelerator} / devices={devices}")
 
