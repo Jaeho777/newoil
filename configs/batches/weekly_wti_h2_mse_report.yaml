@@ -22,7 +22,7 @@ training_defaults:
   inference_windows_batch_size: -1
   max_steps: 1000000
   scaler_type: "revin"
-  val_check_steps: 4
+  val_check_steps: 1
   early_stop_patience_steps: 8
   model_step_size: 1
   loss: "mse"
