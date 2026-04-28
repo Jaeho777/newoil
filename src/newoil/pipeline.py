@@ -322,13 +322,48 @@ def apply_transforms(
     return transformed
 
 
-def panel_to_long(panel: pd.DataFrame) -> pd.DataFrame:
-    return (
-        panel.reset_index()
-        .melt(id_vars="ds", var_name="unique_id", value_name="y")
-        .sort_values(["unique_id", "ds"])
-        .reset_index(drop=True)
-    )
+def build_single_target_nf_df(
+    panel: pd.DataFrame,
+    target_column: str,
+    display_target_name: str,
+    hist_exog_columns: List[str],
+) -> pd.DataFrame:
+    ordered_columns = [target_column, *hist_exog_columns]
+    nf_df = panel[ordered_columns].reset_index().rename(columns={"ds": "ds", target_column: "y"}).copy()
+    nf_df["unique_id"] = display_target_name
+    nf_df = nf_df[["unique_id", "ds", "y", *hist_exog_columns]]
+    return nf_df.sort_values(["unique_id", "ds"]).reset_index(drop=True)
+
+
+def assert_no_leakage_risk(
+    preprocess_cfg: Dict[str, Any],
+    panel: pd.DataFrame,
+    freq: str,
+    train_dates: pd.DatetimeIndex,
+    val_dates: pd.DatetimeIndex,
+    test_dates: pd.DatetimeIndex,
+) -> None:
+    fill_method = preprocess_cfg.get("fill_method")
+    if fill_method in {"bfill", "ffill_bfill"}:
+        raise ValueError(
+            f"Potential leakage risk: fill_method={fill_method} uses backward filling, which is not allowed."
+        )
+
+    if panel.index.has_duplicates:
+        raise ValueError("Potential leakage risk: duplicate timestamps remain after preprocessing.")
+    if not panel.index.is_monotonic_increasing:
+        raise ValueError("Potential leakage risk: timestamps are not strictly increasing after preprocessing.")
+
+    if len(train_dates) and len(val_dates) and train_dates.max() >= val_dates.min():
+        raise ValueError("Potential leakage risk: validation starts before training ends.")
+    if len(val_dates) and len(test_dates) and val_dates.max() >= test_dates.min():
+        raise ValueError("Potential leakage risk: test starts before validation ends.")
+
+    expected_index = pd.date_range(panel.index.min(), panel.index.max(), freq=freq)
+    if len(expected_index) != len(panel.index) or not expected_index.equals(panel.index):
+        raise ValueError(
+            "Potential leakage or alignment risk: the post-processed panel is not contiguous on the configured frequency."
+        )
 
 
 def loss_name_to_instance(loss_name: Optional[str]):
@@ -345,6 +380,7 @@ def build_common_model_kwargs(
     horizon: int,
     input_size: int,
     n_series: int,
+    hist_exog_columns: List[str],
     training_cfg: Dict[str, Any],
     random_seed: int,
 ) -> Dict[str, Any]:
@@ -413,6 +449,9 @@ def build_common_model_kwargs(
     for key, value in model_kwargs.items():
         if value is not None:
             kwargs[key] = value
+
+    if hist_exog_columns:
+        kwargs["hist_exog_list"] = list(hist_exog_columns)
 
     if model_name in {"TimeXer", "iTransformer"}:
         kwargs["n_series"] = n_series
@@ -511,7 +550,7 @@ def summarize_run_issues(summary: Dict[str, Any]) -> Dict[str, str]:
         next_action_note = "Check the saved loss history and forecast outputs before deciding the next change."
 
     if mode == "multivariate":
-        issue_note += " Multivariate loss scale should be compared with target forecast metrics, not by raw loss alone."
+        issue_note += " This multivariate run uses a single target with historical exogenous features, so validation loss is target-aligned."
 
     if pd.notna(train_drop) and pd.notna(val_drop):
         issue_note += f" Train drop={float(train_drop):.3f}, validation drop={float(val_drop):.3f}."
@@ -1069,6 +1108,7 @@ def run_single_experiment(
     target_column = selection["target_column"]
     selected_columns = selection["selected_columns"]
     display_target_name = selection["display_target_name"]
+    hist_exog_columns = [column for column in selected_columns if column != target_column]
 
     preprocess_cfg = dict(dataset_cfg.get("preprocess", {}))
     preprocess_cfg.update(scenario_cfg.get("preprocess", {}))
@@ -1135,9 +1175,22 @@ def run_single_experiment(
     val_dates = transformed_panel.index[-(val_size + test_size) : -test_size]
     test_dates = transformed_panel.index[-test_size:]
     train_val_panel = transformed_panel.iloc[:-test_size]
-    transformed_long = panel_to_long(transformed_panel)
-    train_val_df = panel_to_long(train_val_panel)
-    n_series = len(selected_columns)
+    assert_no_leakage_risk(
+        preprocess_cfg=preprocess_cfg,
+        panel=transformed_panel,
+        freq=dataset_cfg["data"]["freq"],
+        train_dates=train_dates,
+        val_dates=val_dates,
+        test_dates=test_dates,
+    )
+
+    train_val_df = build_single_target_nf_df(
+        panel=train_val_panel,
+        target_column=target_column,
+        display_target_name=display_target_name,
+        hist_exog_columns=hist_exog_columns,
+    )
+    n_series = 1
     training_cfg = resolve_epoch_compatible_training_cfg(
         training_cfg=training_cfg,
         train_length=len(train_val_panel),
@@ -1151,6 +1204,7 @@ def run_single_experiment(
         horizon=horizon,
         input_size=input_size,
         n_series=n_series,
+        hist_exog_columns=hist_exog_columns,
         training_cfg=training_cfg,
         random_seed=random_seed,
     )
@@ -1219,6 +1273,7 @@ def run_single_experiment(
         "dataset_name": dataset_cfg.get("name"),
         "target_column": target_column,
         "selected_columns": selected_columns,
+        "hist_exog_columns": hist_exog_columns,
         "transform": transform_name,
         "target_transform": target_transform,
         "exog_transform": exog_transform,
@@ -1226,6 +1281,7 @@ def run_single_experiment(
         "loss_scale": loss_scale,
         "rows_after_preprocessing": int(len(original_panel)),
         "rows_after_transform": int(len(transformed_panel)),
+        "leakage_checks_passed": True,
         "resolved_training_cfg": training_cfg,
     }
     dump_yaml(run_dir / "config_snapshot.yaml", snapshot)
@@ -1241,6 +1297,7 @@ def run_single_experiment(
         "exog_transform": exog_transform,
         "target_column": target_column,
         "n_series": n_series,
+        "n_hist_exog": len(hist_exog_columns),
         "rows_after_preprocessing": int(len(original_panel)),
         "rows_after_transform": int(len(transformed_panel)),
         "horizon": horizon,
