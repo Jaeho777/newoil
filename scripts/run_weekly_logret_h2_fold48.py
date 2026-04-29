@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -242,7 +241,7 @@ def build_model(
         accelerator=accelerator,
         devices=devices,
         enable_checkpointing=False,
-        enable_progress_bar=False,
+        enable_progress_bar=True,
         enable_model_summary=False,
         logger=logger,
     )
@@ -367,6 +366,13 @@ def run_custom_itransformer(
                 "loss_history_source": "custom_itransformer",
             }
         )
+        if epoch == 1 or epoch % args.progress_every == 0 or epoch == args.max_epochs:
+            print(
+                f"[iTransformer] epoch={epoch}/{args.max_epochs} "
+                f"train_loss={train_mean:.8f} valid_loss={valid_mean:.8f} "
+                f"lr={optimizer.param_groups[0]['lr']:.3g}",
+                flush=True,
+            )
 
     full_arr = model_panel[feature_cols].to_numpy(dtype=np.float32)
     records: List[Dict[str, Any]] = []
@@ -608,6 +614,104 @@ def save_loss_overview(loss_histories: Dict[str, pd.DataFrame], output_path: Pat
     plt.close(fig)
 
 
+def summarize_loss_histories(loss_histories: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for model_name, history in loss_histories.items():
+        row: Dict[str, Any] = {"model": model_name, "n_logged_rows": int(len(history))}
+        x_col = "epoch" if "epoch" in history.columns else "step" if "step" in history.columns else None
+        for loss_col in ["train_loss", "valid_loss"]:
+            if loss_col not in history.columns or not history[loss_col].notna().any():
+                row.update(
+                    {
+                        f"{loss_col}_first": np.nan,
+                        f"{loss_col}_min": np.nan,
+                        f"{loss_col}_final": np.nan,
+                        f"{loss_col}_best_x": np.nan,
+                        f"{loss_col}_final_vs_first_pct": np.nan,
+                        f"{loss_col}_final_vs_min_pct": np.nan,
+                    }
+                )
+                continue
+            series = pd.to_numeric(history[loss_col], errors="coerce").dropna()
+            first = float(series.iloc[0])
+            min_value = float(series.min())
+            final = float(series.iloc[-1])
+            best_idx = series.idxmin()
+            best_x = history.loc[best_idx, x_col] if x_col is not None and best_idx in history.index else best_idx
+            row.update(
+                {
+                    f"{loss_col}_first": first,
+                    f"{loss_col}_min": min_value,
+                    f"{loss_col}_final": final,
+                    f"{loss_col}_best_x": best_x,
+                    f"{loss_col}_final_vs_first_pct": ((final / first) - 1.0) * 100 if first else np.nan,
+                    f"{loss_col}_final_vs_min_pct": ((final / min_value) - 1.0) * 100 if min_value else np.nan,
+                }
+            )
+        if "learning_rate" in history.columns and history["learning_rate"].notna().any():
+            lr = pd.to_numeric(history["learning_rate"], errors="coerce").dropna()
+            row["learning_rate_first"] = float(lr.iloc[0])
+            row["learning_rate_final"] = float(lr.iloc[-1])
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def save_leakage_audit(
+    *,
+    output_path: Path,
+    predictions_all: pd.DataFrame,
+    model_panel: pd.DataFrame,
+    exog_cols: List[str],
+    args: argparse.Namespace,
+) -> pd.DataFrame:
+    checks: List[Dict[str, Any]] = []
+
+    def add_check(name: str, passed: bool, details: str) -> None:
+        checks.append({"check": name, "passed": bool(passed), "details": details})
+
+    add_check(
+        "target_not_in_historical_exog",
+        TARGET_COL not in exog_cols and "target_log_return" not in exog_cols,
+        f"target={TARGET_COL}; exog_cols={exog_cols}",
+    )
+    add_check(
+        "model_index_monotonic_unique",
+        bool(model_panel.index.is_monotonic_increasing and model_panel.index.is_unique),
+        f"rows={len(model_panel)}, start={model_panel.index.min().date()}, end={model_panel.index.max().date()}",
+    )
+    if predictions_all.empty:
+        add_check("prediction_cutoffs_before_targets", False, "No predictions were generated.")
+        add_check("horizon_bounds", False, "No predictions were generated.")
+    else:
+        cutoffs = pd.to_datetime(predictions_all["cutoff"])
+        target_dates = pd.to_datetime(predictions_all["ds"])
+        horizon_idx = pd.to_numeric(predictions_all["horizon_idx"], errors="coerce")
+        bad_temporal = int((target_dates <= cutoffs).sum())
+        bad_horizon = int(((horizon_idx < 1) | (horizon_idx > args.horizon)).sum())
+        add_check(
+            "prediction_cutoffs_before_targets",
+            bad_temporal == 0,
+            f"bad_rows={bad_temporal}; all prediction targets must be after cutoff",
+        )
+        add_check(
+            "horizon_bounds",
+            bad_horizon == 0,
+            f"bad_rows={bad_horizon}; expected horizon_idx in [1, {args.horizon}]",
+        )
+    add_check(
+        "rolling_cv_has_no_future_refit_window",
+        len(model_panel) > args.val_size + args.horizon + ((args.n_windows - 1) * args.step_size),
+        (
+            f"rows={len(model_panel)}, val_size={args.val_size}, horizon={args.horizon}, "
+            f"n_windows={args.n_windows}, step_size={args.step_size}"
+        ),
+    )
+
+    audit = pd.DataFrame(checks)
+    audit.to_csv(output_path, index=False)
+    return audit
+
+
 def run(args: argparse.Namespace) -> Path:
     repo_root = args.repo_root.resolve()
     src_root = repo_root / "src"
@@ -651,6 +755,7 @@ def run(args: argparse.Namespace) -> Path:
         "input_size": args.input_size,
         "max_epochs": args.max_epochs,
         "max_steps_override": args.max_steps,
+        "progress_every": args.progress_every,
         "cv_train_length_for_step_estimate": cv_train_length,
         "cv_step_plan": cv_step_plan,
         "models": args.models,
@@ -677,16 +782,23 @@ def run(args: argparse.Namespace) -> Path:
         "[TRAINING PLAN] "
         f"requested max_epochs={args.max_epochs}; "
         f"CV max_steps={cv_step_plan['max_steps']} "
-        f"({cv_step_plan['estimated_steps_per_epoch']} steps/epoch)"
+        f"({cv_step_plan['estimated_steps_per_epoch']} steps/epoch)",
+        flush=True,
     )
-    print(f"[DEVICE] accelerator={accelerator}, devices={devices}")
+    print(f"[DEVICE] accelerator={accelerator}, devices={devices}", flush=True)
+    print(
+        "[DATA] "
+        f"rows={len(model_panel)}, start={model_panel.index.min().date()}, "
+        f"end={model_panel.index.max().date()}, exog_count={len(exog_cols)}",
+        flush=True,
+    )
 
     all_predictions = []
     summary_rows = []
     loss_histories: Dict[str, pd.DataFrame] = {}
 
     for model_name in args.models:
-        print(f"\n[CV] {model_name}")
+        print(f"\n[CV] {model_name} started", flush=True)
         if model_name == "iTransformer":
             predictions, history, loss_dir = run_custom_itransformer(
                 model_panel=model_panel,
@@ -754,6 +866,20 @@ def run(args: argparse.Namespace) -> Path:
                 x_max=args.max_epochs if "epoch" in history.columns else cv_step_plan["max_steps"],
                 allow_dual_axis=False,
             )
+        if model_name in loss_histories:
+            brief = summarize_loss_histories({model_name: loss_histories[model_name]})
+            if not brief.empty:
+                cols = [
+                    "model",
+                    "train_loss_first",
+                    "train_loss_final",
+                    "valid_loss_first",
+                    "valid_loss_min",
+                    "valid_loss_final",
+                    "valid_loss_final_vs_first_pct",
+                ]
+                print("[LOSS SUMMARY]", flush=True)
+                print(brief[[col for col in cols if col in brief.columns]].to_string(index=False), flush=True)
 
         return_metrics = compute_metrics(predictions["actual_log_return"], predictions["pred_log_return"])
         price_metrics = compute_metrics(predictions["actual_price"], predictions["predicted_price"])
@@ -777,6 +903,17 @@ def run(args: argparse.Namespace) -> Path:
     predictions_all.to_csv(output_root / "cv_predictions_all_models.csv", index=False)
     summary = pd.DataFrame(summary_rows)
     summary.to_csv(output_root / "fold48_metrics_summary.csv", index=False)
+    loss_summary = summarize_loss_histories(loss_histories)
+    loss_summary_path = output_root / "loss_summary.csv"
+    loss_summary.to_csv(loss_summary_path, index=False)
+    leakage_audit_path = output_root / "leakage_audit.csv"
+    leakage_audit = save_leakage_audit(
+        output_path=leakage_audit_path,
+        predictions_all=predictions_all,
+        model_panel=model_panel,
+        exog_cols=exog_cols,
+        args=args,
+    )
 
     prediction_plot = output_root / "actual_vs_predicted_price.png"
     save_prediction_plot(predictions_all, prediction_plot)
@@ -787,6 +924,9 @@ def run(args: argparse.Namespace) -> Path:
 
     print(f"\nOutput root: {output_root}")
     print(f"Metrics summary: {output_root / 'fold48_metrics_summary.csv'}")
+    print(f"Loss summary: {loss_summary_path}")
+    print(f"Leakage audit: {leakage_audit_path}")
+    print(f"Leakage audit passed: {bool(leakage_audit['passed'].all())}")
     print(f"Prediction graph: {prediction_plot}")
     print(f"Fold paths graph: {fold_paths_plot}")
     print(f"Loss graph: {loss_plot}")
@@ -822,6 +962,7 @@ def parse_args() -> argparse.Namespace:
         default="high",
         help="Float32 matmul precision for CUDA Tensor Cores.",
     )
+    parser.add_argument("--progress-every", type=int, default=25)
     parser.add_argument("--seed", type=int, default=1)
     return parser.parse_args()
 
