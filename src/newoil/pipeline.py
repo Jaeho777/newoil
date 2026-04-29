@@ -655,12 +655,16 @@ def plot_loss_curves(
 
     fig, ax = plt.subplots(figsize=(10, 4))
     plotted = False
+    train_loss = pd.Series(dtype=float)
+    valid_rows = pd.DataFrame()
+    valid_loss = pd.Series(dtype=float)
 
     if "train_loss" in history_df:
-        train_loss = history_df["train_loss"].where(history_df["train_loss"] > 0) if y_scale == "log" else history_df["train_loss"]
-        if not train_loss.dropna().empty:
-            ax.plot(history_df[x_column], train_loss, label="Train loss", linewidth=1.4)
-            plotted = True
+        train_loss = (
+            history_df["train_loss"].where(history_df["train_loss"] > 0)
+            if y_scale == "log"
+            else history_df["train_loss"]
+        )
 
     if "valid_loss" in history_df:
         valid_rows = history_df.dropna(subset=["valid_loss"])
@@ -670,29 +674,91 @@ def plot_loss_curves(
                 if y_scale == "log"
                 else valid_rows["valid_loss"]
             )
-            if not valid_loss.dropna().empty:
-                ax.plot(
-                    valid_rows[x_column],
-                    valid_loss,
-                    label="Validation loss",
-                    linewidth=1.8,
-                    marker="o",
-                )
-                plotted = True
+
+    train_scale = _series_scale(train_loss)
+    valid_scale = _series_scale(valid_loss)
+    use_dual_axis = (
+        y_scale == "linear"
+        and math.isfinite(train_scale)
+        and math.isfinite(valid_scale)
+        and min(train_scale, valid_scale) > 0
+        and max(train_scale, valid_scale) / min(train_scale, valid_scale) >= 25.0
+    )
+
+    if use_dual_axis:
+        valid_ax = ax.twinx()
+        if not train_loss.dropna().empty:
+            ax.plot(
+                history_df[x_column],
+                train_loss,
+                label="Train loss (left)",
+                color="#1f77b4",
+                linewidth=1.4,
+            )
+            plotted = True
+        if not valid_loss.dropna().empty:
+            valid_ax.plot(
+                valid_rows[x_column],
+                valid_loss,
+                label="Validation loss (right)",
+                color="#ff7f0e",
+                linewidth=1.8,
+                marker="o",
+            )
+            plotted = True
+        ax.set_ylabel("Train loss")
+        valid_ax.set_ylabel("Validation loss")
+        ax.tick_params(axis="y", labelcolor="#1f77b4")
+        valid_ax.tick_params(axis="y", labelcolor="#ff7f0e")
+        handles, labels = ax.get_legend_handles_labels()
+        valid_handles, valid_labels = valid_ax.get_legend_handles_labels()
+        handles.extend(valid_handles)
+        labels.extend(valid_labels)
+        ax.text(
+            0.01,
+            0.96,
+            "Separate y-axes due to loss scale gap",
+            transform=ax.transAxes,
+            fontsize=8,
+            va="top",
+        )
+    else:
+        if not train_loss.dropna().empty:
+            ax.plot(history_df[x_column], train_loss, label="Train loss", linewidth=1.4)
+            plotted = True
+        if not valid_loss.dropna().empty:
+            ax.plot(
+                valid_rows[x_column],
+                valid_loss,
+                label="Validation loss",
+                linewidth=1.8,
+                marker="o",
+            )
+            plotted = True
+        handles, labels = ax.get_legend_handles_labels()
 
     if y_scale != "linear":
         ax.set_yscale(y_scale)
 
     ax.set_title(title)
     ax.set_xlabel(x_label)
-    ax.set_ylabel("Loss")
+    if not use_dual_axis:
+        ax.set_ylabel("Loss")
     if x_max is not None and math.isfinite(float(x_max)) and float(x_max) > 0:
         ax.set_xlim(left=0, right=float(x_max))
     if plotted:
-        ax.legend()
+        ax.legend(handles, labels)
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
+
+
+def _series_scale(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce").dropna().abs()
+    numeric = numeric[numeric > 0]
+    if numeric.empty:
+        return float("nan")
+    return float(numeric.median())
 
 
 def summarize_run_issues(summary: Dict[str, Any]) -> Dict[str, str]:
