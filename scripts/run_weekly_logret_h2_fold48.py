@@ -216,7 +216,7 @@ def build_model(
         input_size=input_size,
         loss=MSE(),
         valid_loss=MSE(),
-        scaler_type="robust",
+        scaler_type="identity",
         batch_size=32,
         valid_batch_size=32,
         windows_batch_size=128,
@@ -646,6 +646,7 @@ def run(args: argparse.Namespace) -> Path:
         "matmul_precision": args.matmul_precision if accelerator == "gpu" else "",
         "target_transform": "log-diff",
         "exog_transform": "none",
+        "neuralforecast_scaler_type": "identity",
     }
     (output_root / "run_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
