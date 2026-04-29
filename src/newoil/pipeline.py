@@ -1341,7 +1341,6 @@ def company_experiment_title(experiment_key: str) -> str:
     mapping = {
         "mse_report": "Requested MSE Report Setting",
         "mse_scaled_regularized": "Scaled + Regularized Improvement Setting",
-        "mae_robust_stable": "Reference-Inspired MAE + Robust Stable Setting",
         "mse_raw_report": "Raw Reference Setting",
         "mse_scaled_val_sweep": "Validation Size Sweep Setting",
     }

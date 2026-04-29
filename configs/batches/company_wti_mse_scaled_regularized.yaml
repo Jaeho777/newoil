@@ -1,5 +1,5 @@
-name: "company_wti_mae_robust_stable"
-description: "Reference-notebook-inspired daily and weekly uni vs multi comparison with robust scaling, target MAE loss, longer validation, and less aggressive early stopping."
+name: "company_wti_mse_scaled_regularized"
+description: "Reference-notebook-inspired daily and weekly uni vs multi comparison with MSE loss, robust scaling, longer validation, and less aggressive early stopping."
 start_date: "2011-01-01"
 feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
 
@@ -26,7 +26,7 @@ training_defaults:
   val_check_steps: 1
   early_stop_patience_steps: 30
   model_step_size: 1
-  loss: "mae"
+  loss: "mse"
   learning_rate: 0.0002
   optimizer:
     name: "adamw"
@@ -72,7 +72,7 @@ report:
   x_axis: "epoch"
 
 scenarios:
-  - name: "uni_daily_h12_mae_robust_stable"
+  - name: "uni_daily_h12_scaled_regularized"
     dataset: "daily"
     mode: "univariate"
     horizon: 12
@@ -81,7 +81,7 @@ scenarios:
     report:
       lookback_plot: 120
 
-  - name: "multi_daily_h12_mae_robust_stable"
+  - name: "multi_daily_h12_scaled_regularized"
     dataset: "daily"
     mode: "multivariate"
     horizon: 12
@@ -90,7 +90,7 @@ scenarios:
     report:
       lookback_plot: 120
 
-  - name: "uni_weekly_h2_mae_robust_stable"
+  - name: "uni_weekly_h2_scaled_regularized"
     dataset: "weekly"
     mode: "univariate"
     horizon: 2
@@ -99,7 +99,7 @@ scenarios:
     report:
       lookback_plot: 60
 
-  - name: "multi_weekly_h2_mae_robust_stable"
+  - name: "multi_weekly_h2_scaled_regularized"
     dataset: "weekly"
     mode: "multivariate"
     horizon: 2
