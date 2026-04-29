@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from torch import nn
+from torch.utils.data import DataLoader, Dataset
 
 
 VARIABLES = [
@@ -33,7 +35,7 @@ VARIABLES = [
 
 TARGET_COL = "Com_CrudeOil"
 UNIQUE_ID = "WTI_log_return"
-DEFAULT_MODELS = ["GRU", "TimeXer"]
+DEFAULT_MODELS = ["GRU", "TimeXer", "CustomITransformer"]
 
 
 def detect_accelerator(requested_devices: int) -> tuple[str, int]:
@@ -96,6 +98,105 @@ def make_nf_df(model_panel: pd.DataFrame, exog_cols: List[str]) -> pd.DataFrame:
     return nf_df[["unique_id", "ds", "y", *exog_cols]]
 
 
+class OilWindowDataset(Dataset):
+    def __init__(self, arr: np.ndarray, input_size: int, horizon: int, indices: np.ndarray):
+        self.arr = np.asarray(arr, dtype=np.float32)
+        self.input_size = int(input_size)
+        self.horizon = int(horizon)
+        self.indices = np.asarray(indices, dtype=int)
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        start = int(self.indices[idx])
+        x = self.arr[start : start + self.input_size, :]
+        y = self.arr[start + self.input_size : start + self.input_size + self.horizon, 0]
+        return torch.from_numpy(x), torch.from_numpy(y)
+
+
+class InvertedDataEmbedding(nn.Module):
+    def __init__(self, seq_len: int, d_model: int, dropout: float = 0.1):
+        super().__init__()
+        self.value_embedding = nn.Linear(seq_len, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.permute(0, 2, 1)
+        return self.dropout(self.value_embedding(x))
+
+
+class TargetOnlyITransformer(nn.Module):
+    def __init__(
+        self,
+        seq_len: int,
+        pred_len: int,
+        n_vars: int,
+        d_model: int = 128,
+        n_heads: int = 4,
+        e_layers: int = 2,
+        d_ff: int = 256,
+        dropout: float = 0.2,
+    ):
+        super().__init__()
+        self.enc_embedding = InvertedDataEmbedding(seq_len, d_model, dropout)
+        layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=d_ff,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=False,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=e_layers)
+        self.projector = nn.Linear(d_model, pred_len)
+        self.n_vars = n_vars
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        means = x.mean(dim=1, keepdim=True).detach()
+        centered = x - means
+        stdev = torch.sqrt(torch.var(centered, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        x_norm = centered / stdev
+        encoded = self.encoder(self.enc_embedding(x_norm))
+        out = self.projector(encoded).permute(0, 2, 1)
+        out = out * stdev[:, 0, :].unsqueeze(1)
+        out = out + means[:, 0, :].unsqueeze(1)
+        return out[:, :, 0]
+
+
+def make_train_val_window_indices(n_rows: int, input_size: int, horizon: int, val_size: int) -> tuple[np.ndarray, np.ndarray]:
+    max_start = n_rows - input_size - horizon + 1
+    if max_start <= 0:
+        raise ValueError("Not enough rows for custom iTransformer windowing.")
+    val_start_idx = n_rows - val_size
+    train_idx: List[int] = []
+    val_idx: List[int] = []
+    for start in range(max_start):
+        target_start = start + input_size
+        target_end = target_start + horizon
+        if target_end <= val_start_idx:
+            train_idx.append(start)
+        elif target_start >= val_start_idx and target_end <= n_rows:
+            val_idx.append(start)
+    return np.asarray(train_idx, dtype=int), np.asarray(val_idx, dtype=int)
+
+
+def torch_device_for(accelerator: str) -> torch.device:
+    if accelerator == "gpu" and torch.cuda.is_available():
+        return torch.device("cuda:0")
+    if accelerator == "mps" and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def set_torch_seed(seed: int) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def build_model(
     model_name: str,
     exog_cols: List[str],
@@ -152,6 +253,140 @@ def build_model(
             dropout=0.15,
         )
     raise ValueError(f"Unsupported model for historical exogenous CV: {model_name}")
+
+
+def run_custom_itransformer(
+    model_panel: pd.DataFrame,
+    panel: pd.DataFrame,
+    exog_cols: List[str],
+    args: argparse.Namespace,
+    output_root: Path,
+    accelerator: str,
+    cv_step_plan: Dict[str, int],
+) -> tuple[pd.DataFrame, pd.DataFrame, Path]:
+    set_torch_seed(args.seed)
+    device = torch_device_for(accelerator)
+    feature_cols = ["target_log_return", *exog_cols]
+    train_base_length = max(
+        len(model_panel) - args.horizon - ((args.n_windows - 1) * args.step_size),
+        args.input_size + args.horizon + args.val_size,
+    )
+    train_base = model_panel.iloc[:train_base_length].copy()
+    arr = train_base[feature_cols].to_numpy(dtype=np.float32)
+    train_idx, val_idx = make_train_val_window_indices(
+        n_rows=len(arr),
+        input_size=args.input_size,
+        horizon=args.horizon,
+        val_size=args.val_size,
+    )
+
+    train_loader = DataLoader(
+        OilWindowDataset(arr, args.input_size, args.horizon, train_idx),
+        batch_size=32,
+        shuffle=True,
+        drop_last=False,
+    )
+    val_loader = DataLoader(
+        OilWindowDataset(arr, args.input_size, args.horizon, val_idx),
+        batch_size=32,
+        shuffle=False,
+        drop_last=False,
+    )
+
+    model = TargetOnlyITransformer(
+        seq_len=args.input_size,
+        pred_len=args.horizon,
+        n_vars=len(feature_cols),
+        d_model=128,
+        n_heads=4,
+        e_layers=2,
+        d_ff=256,
+        dropout=0.2,
+    ).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    criterion = nn.MSELoss()
+    loss_rows: List[Dict[str, Any]] = []
+
+    for epoch in range(1, args.max_epochs + 1):
+        model.train()
+        train_losses: List[float] = []
+        for xb, yb in train_loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            pred = model(xb)
+            loss = criterion(pred, yb)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            train_losses.append(float(loss.detach().cpu().item()))
+
+        model.eval()
+        val_losses: List[float] = []
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb = xb.to(device)
+                yb = yb.to(device)
+                pred = model(xb)
+                loss = criterion(pred, yb)
+                val_losses.append(float(loss.detach().cpu().item()))
+
+        loss_rows.append(
+            {
+                "epoch": epoch,
+                "step": epoch * cv_step_plan["estimated_steps_per_epoch"],
+                "log_index": epoch,
+                "train_loss": float(np.mean(train_losses)) if train_losses else np.nan,
+                "valid_loss": float(np.mean(val_losses)) if val_losses else np.nan,
+                "loss_history_source": "custom_itransformer",
+            }
+        )
+
+    full_arr = model_panel[feature_cols].to_numpy(dtype=np.float32)
+    records: List[Dict[str, Any]] = []
+    last_cutoff_pos = len(model_panel) - args.horizon - 1
+    cutoff_positions = range(
+        last_cutoff_pos - ((args.n_windows - 1) * args.step_size),
+        last_cutoff_pos + 1,
+        args.step_size,
+    )
+    model.eval()
+    with torch.no_grad():
+        for cutoff_pos in cutoff_positions:
+            x_start = cutoff_pos - args.input_size + 1
+            x_end = cutoff_pos + 1
+            if x_start < 0:
+                continue
+            x = torch.from_numpy(full_arr[x_start:x_end, :]).unsqueeze(0).to(device)
+            pred_returns = model(x).detach().cpu().numpy().reshape(-1)
+            cutoff_date = model_panel.index[cutoff_pos]
+            base_price = float(panel.loc[cutoff_date, TARGET_COL])
+            cumulative_return = 0.0
+            for horizon_idx, pred_return in enumerate(pred_returns, start=1):
+                target_pos = cutoff_pos + horizon_idx
+                if target_pos >= len(model_panel):
+                    continue
+                ds = model_panel.index[target_pos]
+                cumulative_return += float(pred_return)
+                records.append(
+                    {
+                        "unique_id": UNIQUE_ID,
+                        "ds": ds,
+                        "cutoff": cutoff_date,
+                        "pred_log_return": float(pred_return),
+                        "actual_log_return": float(model_panel.iloc[target_pos]["target_log_return"]),
+                        "actual_price": float(panel.loc[ds, TARGET_COL]),
+                        "horizon_idx": horizon_idx,
+                        "predicted_price": float(base_price * np.exp(cumulative_return)),
+                    }
+                )
+
+    loss_dir = output_root / "CustomITransformer_loss"
+    loss_dir.mkdir(parents=True, exist_ok=True)
+    loss_history = pd.DataFrame(loss_rows)
+    loss_history.to_csv(loss_dir / "loss_history.csv", index=False)
+    predictions = pd.DataFrame(records)
+    return predictions, loss_history, loss_dir
 
 
 def estimate_epoch_equivalent_max_steps(
@@ -429,30 +664,54 @@ def run(args: argparse.Namespace) -> Path:
 
     for model_name in args.models:
         print(f"\n[CV] {model_name}")
-        model = build_model(
-            model_name=model_name,
-            exog_cols=exog_cols,
-            accelerator=accelerator,
-            devices=devices,
-            h=args.horizon,
-            input_size=args.input_size,
-            max_steps=cv_step_plan["max_steps"],
-            random_seed=args.seed,
-            logger=False,
-        )
-        nf = NeuralForecast(models=[model], freq="W-MON")
-        cv_df = nf.cross_validation(
-            df=nf_df,
-            val_size=args.val_size,
-            n_windows=args.n_windows,
-            step_size=args.step_size,
-        )
-        pred_col = find_prediction_column(cv_df, model_name)
-        predictions = attach_price_predictions(cv_df, panel, pred_col)
-        predictions["model"] = model_name
-        predictions_path = output_root / f"{model_name}_cv_predictions.csv"
-        predictions.to_csv(predictions_path, index=False)
-        all_predictions.append(predictions)
+        if model_name == "CustomITransformer":
+            predictions, history, loss_dir = run_custom_itransformer(
+                model_panel=model_panel,
+                panel=panel,
+                exog_cols=exog_cols,
+                args=args,
+                output_root=output_root,
+                accelerator=accelerator,
+                cv_step_plan=cv_step_plan,
+            )
+            predictions["model"] = model_name
+            predictions_path = output_root / f"{model_name}_cv_predictions.csv"
+            predictions.to_csv(predictions_path, index=False)
+            all_predictions.append(predictions)
+            loss_histories[model_name] = history
+            plot_loss_curves(
+                history,
+                f"{model_name} target-log-return MSE loss",
+                loss_dir / "loss_curve.png",
+                x_column="epoch",
+                x_label="Epoch",
+                x_max=args.max_epochs,
+            )
+        else:
+            model = build_model(
+                model_name=model_name,
+                exog_cols=exog_cols,
+                accelerator=accelerator,
+                devices=devices,
+                h=args.horizon,
+                input_size=args.input_size,
+                max_steps=cv_step_plan["max_steps"],
+                random_seed=args.seed,
+                logger=False,
+            )
+            nf = NeuralForecast(models=[model], freq="W-MON")
+            cv_df = nf.cross_validation(
+                df=nf_df,
+                val_size=args.val_size,
+                n_windows=args.n_windows,
+                step_size=args.step_size,
+            )
+            pred_col = find_prediction_column(cv_df, model_name)
+            predictions = attach_price_predictions(cv_df, panel, pred_col)
+            predictions["model"] = model_name
+            predictions_path = output_root / f"{model_name}_cv_predictions.csv"
+            predictions.to_csv(predictions_path, index=False)
+            all_predictions.append(predictions)
 
         return_metrics = compute_metrics(predictions["actual_log_return"], predictions["pred_log_return"])
         price_metrics = compute_metrics(predictions["actual_price"], predictions["predicted_price"])
@@ -471,6 +730,9 @@ def run(args: argparse.Namespace) -> Path:
                 "predictions_csv": str(predictions_path),
             }
         )
+
+        if model_name == "CustomITransformer":
+            continue
 
         print(f"[LOSS] {model_name} representative final fit")
         loss_dir = output_root / f"{model_name}_loss"
