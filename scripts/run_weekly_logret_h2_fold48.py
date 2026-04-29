@@ -574,7 +574,7 @@ def save_loss_overview(loss_histories: Dict[str, pd.DataFrame], output_path: Pat
             valid = history[["epoch", "valid_loss"]].dropna()
             base = valid["valid_loss"].iloc[0] if len(valid) and valid["valid_loss"].iloc[0] != 0 else 1.0
             ax.plot(valid["epoch"], valid["valid_loss"] / base, label="valid_loss normalized", linewidth=1.8, marker="o")
-        ax.set_title(f"{model_name} representative final-fit MSE loss")
+        ax.set_title(f"{model_name} CV-training MSE loss")
         ax.set_xlabel("epoch/log step")
         ax.set_ylabel("normalized MSE loss")
         ax.grid(True, alpha=0.25)
@@ -605,18 +605,9 @@ def run(args: argparse.Namespace) -> Path:
         len(nf_df) - args.val_size - args.horizon - ((args.n_windows - 1) * args.step_size),
         args.input_size + args.horizon,
     )
-    loss_train_length = max(len(nf_df) - args.horizon, args.input_size + args.horizon)
     cv_step_plan = estimate_epoch_equivalent_max_steps(
         pipeline_module=pipeline,
         train_length=cv_train_length,
-        input_size=args.input_size,
-        horizon=args.horizon,
-        max_epochs=args.max_epochs,
-        max_steps_override=args.max_steps,
-    )
-    loss_step_plan = estimate_epoch_equivalent_max_steps(
-        pipeline_module=pipeline,
-        train_length=loss_train_length,
         input_size=args.input_size,
         horizon=args.horizon,
         max_epochs=args.max_epochs,
@@ -638,8 +629,6 @@ def run(args: argparse.Namespace) -> Path:
         "max_steps_override": args.max_steps,
         "cv_train_length_for_step_estimate": cv_train_length,
         "cv_step_plan": cv_step_plan,
-        "loss_train_length_for_step_estimate": loss_train_length,
-        "loss_step_plan": loss_step_plan,
         "models": args.models,
         "accelerator": accelerator,
         "devices": devices,
@@ -653,9 +642,7 @@ def run(args: argparse.Namespace) -> Path:
         "[TRAINING PLAN] "
         f"requested max_epochs={args.max_epochs}; "
         f"CV max_steps={cv_step_plan['max_steps']} "
-        f"({cv_step_plan['estimated_steps_per_epoch']} steps/epoch); "
-        f"loss-plot max_steps={loss_step_plan['max_steps']} "
-        f"({loss_step_plan['estimated_steps_per_epoch']} steps/epoch)"
+        f"({cv_step_plan['estimated_steps_per_epoch']} steps/epoch)"
     )
     print(f"[DEVICE] accelerator={accelerator}, devices={devices}")
 
@@ -690,6 +677,8 @@ def run(args: argparse.Namespace) -> Path:
                 allow_dual_axis=False,
             )
         else:
+            loss_dir = output_root / f"{model_name}_loss"
+            loss_dir.mkdir(parents=True, exist_ok=True)
             model = build_model(
                 model_name=model_name,
                 exog_cols=exog_cols,
@@ -699,7 +688,7 @@ def run(args: argparse.Namespace) -> Path:
                 input_size=args.input_size,
                 max_steps=cv_step_plan["max_steps"],
                 random_seed=args.seed,
-                logger=False,
+                logger=build_loss_csv_logger(loss_dir),
             )
             nf = NeuralForecast(models=[model], freq="W-MON")
             cv_df = nf.cross_validation(
@@ -714,6 +703,22 @@ def run(args: argparse.Namespace) -> Path:
             predictions_path = output_root / f"{model_name}_cv_predictions.csv"
             predictions.to_csv(predictions_path, index=False)
             all_predictions.append(predictions)
+            history = save_loss_history(nf.models[0], loss_dir)
+            if "loss_history_source" not in history.columns:
+                csv_history = load_csv_logger_loss_history(loss_dir)
+                if not csv_history.empty:
+                    history = csv_history
+                    history.to_csv(loss_dir / "loss_history.csv", index=False)
+            loss_histories[model_name] = history
+            plot_loss_curves(
+                history,
+                f"{model_name} CV-training MSE loss",
+                loss_dir / "loss_curve.png",
+                x_column="epoch" if "epoch" in history.columns else "step",
+                x_label="Epoch/log step",
+                x_max=args.max_epochs if "epoch" in history.columns else cv_step_plan["max_steps"],
+                allow_dual_axis=False,
+            )
 
         return_metrics = compute_metrics(predictions["actual_log_return"], predictions["pred_log_return"])
         price_metrics = compute_metrics(predictions["actual_price"], predictions["predicted_price"])
@@ -731,42 +736,6 @@ def run(args: argparse.Namespace) -> Path:
                 "price_MAPE": price_metrics["MAPE"],
                 "predictions_csv": str(predictions_path),
             }
-        )
-
-        if model_name == "iTransformer":
-            continue
-
-        print(f"[LOSS] {model_name} representative final fit")
-        loss_dir = output_root / f"{model_name}_loss"
-        loss_dir.mkdir(parents=True, exist_ok=True)
-        loss_model = build_model(
-            model_name=model_name,
-            exog_cols=exog_cols,
-            accelerator=accelerator,
-            devices=devices,
-            h=args.horizon,
-            input_size=args.input_size,
-            max_steps=loss_step_plan["max_steps"],
-            random_seed=args.seed,
-            logger=build_loss_csv_logger(loss_dir),
-        )
-        loss_nf = NeuralForecast(models=[loss_model], freq="W-MON")
-        loss_nf.fit(df=nf_df.iloc[: -args.horizon].copy(), val_size=args.val_size)
-        history = save_loss_history(loss_nf.models[0], loss_dir)
-        if "loss_history_source" not in history.columns:
-            csv_history = load_csv_logger_loss_history(loss_dir)
-            if not csv_history.empty:
-                history = csv_history
-                history.to_csv(loss_dir / "loss_history.csv", index=False)
-        loss_histories[model_name] = history
-        plot_loss_curves(
-            history,
-            f"{model_name} final-fit MSE loss",
-            loss_dir / "loss_curve.png",
-            x_column="epoch" if "epoch" in history.columns else "step",
-            x_label="Epoch/log step",
-            x_max=args.max_epochs if "epoch" in history.columns else loss_step_plan["max_steps"],
-            allow_dual_axis=False,
         )
 
     predictions_all = pd.concat(all_predictions, ignore_index=True) if all_predictions else pd.DataFrame()
