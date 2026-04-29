@@ -35,7 +35,7 @@ VARIABLES = [
 
 TARGET_COL = "Com_CrudeOil"
 UNIQUE_ID = "WTI_log_return"
-DEFAULT_MODELS = ["GRU", "TimeXer", "CustomITransformer"]
+DEFAULT_MODELS = ["GRU", "TimeXer", "iTransformer"]
 
 
 def detect_accelerator(requested_devices: int) -> tuple[str, int]:
@@ -381,7 +381,7 @@ def run_custom_itransformer(
                     }
                 )
 
-    loss_dir = output_root / "CustomITransformer_loss"
+    loss_dir = output_root / "iTransformer_loss"
     loss_dir.mkdir(parents=True, exist_ok=True)
     loss_history = pd.DataFrame(loss_rows)
     loss_history.to_csv(loss_dir / "loss_history.csv", index=False)
@@ -664,7 +664,7 @@ def run(args: argparse.Namespace) -> Path:
 
     for model_name in args.models:
         print(f"\n[CV] {model_name}")
-        if model_name == "CustomITransformer":
+        if model_name == "iTransformer":
             predictions, history, loss_dir = run_custom_itransformer(
                 model_panel=model_panel,
                 panel=panel,
@@ -686,6 +686,7 @@ def run(args: argparse.Namespace) -> Path:
                 x_column="epoch",
                 x_label="Epoch",
                 x_max=args.max_epochs,
+                allow_dual_axis=False,
             )
         else:
             model = build_model(
@@ -731,7 +732,7 @@ def run(args: argparse.Namespace) -> Path:
             }
         )
 
-        if model_name == "CustomITransformer":
+        if model_name == "iTransformer":
             continue
 
         print(f"[LOSS] {model_name} representative final fit")
@@ -764,6 +765,7 @@ def run(args: argparse.Namespace) -> Path:
             x_column="epoch" if "epoch" in history.columns else "step",
             x_label="Epoch/log step",
             x_max=args.max_epochs if "epoch" in history.columns else loss_step_plan["max_steps"],
+            allow_dual_axis=False,
         )
 
     predictions_all = pd.concat(all_predictions, ignore_index=True) if all_predictions else pd.DataFrame()

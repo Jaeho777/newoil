@@ -719,6 +719,7 @@ def plot_loss_curves(
     x_label: str = "Global step",
     x_max: Optional[float] = None,
     normalize_mode: str = "none",
+    allow_dual_axis: bool = True,
 ) -> None:
     y_scale = str(y_scale or "linear").lower().strip()
     if y_scale not in {"linear", "log", "symlog"}:
@@ -759,6 +760,8 @@ def plot_loss_curves(
     train_scale = _series_scale(train_loss)
     valid_scale = _series_scale(valid_loss)
     use_dual_axis = (
+        allow_dual_axis
+        and
         normalize_mode == "none"
         and y_scale == "linear"
         and math.isfinite(train_scale)
