@@ -154,6 +154,39 @@ def build_model(
     raise ValueError(f"Unsupported model for historical exogenous CV: {model_name}")
 
 
+def estimate_epoch_equivalent_max_steps(
+    pipeline_module: Any,
+    train_length: int,
+    input_size: int,
+    horizon: int,
+    max_epochs: int,
+    max_steps_override: int | None,
+) -> Dict[str, int]:
+    training_cfg = {
+        "batch_size": 32,
+        "windows_batch_size": 128,
+    }
+    steps_per_epoch = pipeline_module.estimate_steps_per_epoch(
+        train_length=train_length,
+        input_size=input_size,
+        horizon=horizon,
+        n_series=1,
+        training_cfg=training_cfg,
+    )
+    epoch_equivalent_max_steps = int(max_epochs) * int(steps_per_epoch)
+    max_steps = (
+        min(int(max_steps_override), epoch_equivalent_max_steps)
+        if max_steps_override is not None
+        else epoch_equivalent_max_steps
+    )
+    return {
+        "requested_max_epochs": int(max_epochs),
+        "estimated_steps_per_epoch": int(steps_per_epoch),
+        "epoch_equivalent_max_steps": int(epoch_equivalent_max_steps),
+        "max_steps": int(max_steps),
+    }
+
+
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
@@ -267,6 +300,27 @@ def run(args: argparse.Namespace) -> Path:
     accelerator, devices = detect_accelerator()
     panel, model_panel, exog_cols, metadata = weekly_panel(repo_root)
     nf_df = make_nf_df(model_panel, exog_cols)
+    cv_train_length = max(
+        len(nf_df) - args.val_size - args.horizon - ((args.n_windows - 1) * args.step_size),
+        args.input_size + args.horizon,
+    )
+    loss_train_length = max(len(nf_df) - args.horizon, args.input_size + args.horizon)
+    cv_step_plan = estimate_epoch_equivalent_max_steps(
+        pipeline_module=pipeline,
+        train_length=cv_train_length,
+        input_size=args.input_size,
+        horizon=args.horizon,
+        max_epochs=args.max_epochs,
+        max_steps_override=args.max_steps,
+    )
+    loss_step_plan = estimate_epoch_equivalent_max_steps(
+        pipeline_module=pipeline,
+        train_length=loss_train_length,
+        input_size=args.input_size,
+        horizon=args.horizon,
+        max_epochs=args.max_epochs,
+        max_steps_override=args.max_steps,
+    )
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     output_root = args.output_root.resolve() / f"weekly_logret_h2_fold48_{timestamp}"
@@ -279,7 +333,12 @@ def run(args: argparse.Namespace) -> Path:
         "step_size": args.step_size,
         "val_size": args.val_size,
         "input_size": args.input_size,
-        "max_steps": args.max_steps,
+        "max_epochs": args.max_epochs,
+        "max_steps_override": args.max_steps,
+        "cv_train_length_for_step_estimate": cv_train_length,
+        "cv_step_plan": cv_step_plan,
+        "loss_train_length_for_step_estimate": loss_train_length,
+        "loss_step_plan": loss_step_plan,
         "models": args.models,
         "accelerator": accelerator,
         "devices": devices,
@@ -287,6 +346,14 @@ def run(args: argparse.Namespace) -> Path:
         "exog_transform": "none",
     }
     (output_root / "run_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(
+        "[TRAINING PLAN] "
+        f"requested max_epochs={args.max_epochs}; "
+        f"CV max_steps={cv_step_plan['max_steps']} "
+        f"({cv_step_plan['estimated_steps_per_epoch']} steps/epoch); "
+        f"loss-plot max_steps={loss_step_plan['max_steps']} "
+        f"({loss_step_plan['estimated_steps_per_epoch']} steps/epoch)"
+    )
 
     all_predictions = []
     summary_rows = []
@@ -301,7 +368,7 @@ def run(args: argparse.Namespace) -> Path:
             devices=devices,
             h=args.horizon,
             input_size=args.input_size,
-            max_steps=args.max_steps,
+            max_steps=cv_step_plan["max_steps"],
             random_seed=args.seed,
             logger=False,
         )
@@ -347,7 +414,7 @@ def run(args: argparse.Namespace) -> Path:
             devices=devices,
             h=args.horizon,
             input_size=args.input_size,
-            max_steps=args.max_steps,
+            max_steps=loss_step_plan["max_steps"],
             random_seed=args.seed,
             logger=build_loss_csv_logger(loss_dir),
         )
@@ -366,7 +433,7 @@ def run(args: argparse.Namespace) -> Path:
             loss_dir / "loss_curve.png",
             x_column="epoch" if "epoch" in history.columns else "step",
             x_label="Epoch/log step",
-            x_max=args.max_steps,
+            x_max=args.max_epochs if "epoch" in history.columns else loss_step_plan["max_steps"],
         )
 
     predictions_all = pd.concat(all_predictions, ignore_index=True) if all_predictions else pd.DataFrame()
@@ -396,7 +463,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--step-size", type=int, default=1)
     parser.add_argument("--val-size", type=int, default=48)
     parser.add_argument("--input-size", type=int, default=64)
-    parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--max-epochs", type=int, default=500)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Optional hard cap. Leave unset to run the epoch-equivalent step budget.",
+    )
     parser.add_argument("--seed", type=int, default=1)
     return parser.parse_args()
 
