@@ -914,6 +914,7 @@ def invert_predictions(
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    mse = float(np.mean((y_true - y_pred) ** 2))
     mae = float(np.mean(np.abs(y_true - y_pred)))
     rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
     denom = np.where(y_true == 0, np.nan, y_true)
@@ -921,7 +922,7 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     smape_denom = np.abs(y_true) + np.abs(y_pred)
     smape_denom = np.where(smape_denom == 0, np.nan, smape_denom)
     smape = float(np.nanmean(2.0 * np.abs(y_pred - y_true) / smape_denom) * 100)
-    return {"MAE": mae, "RMSE": rmse, "MAPE": mape, "sMAPE": smape}
+    return {"MSE": mse, "MAE": mae, "RMSE": rmse, "MAPE": mape, "sMAPE": smape}
 
 
 def diagnose_run(
@@ -1095,6 +1096,7 @@ def prepare_batch_artifacts(summary_df: pd.DataFrame, batch_dir: Path) -> Dict[s
                     "dataset": dataset,
                     "mode": mode,
                     "best_model": best["model"],
+                    "MSE": round(float(best.get("MSE", np.nan)), 6),
                     "MAE": round(float(best["MAE"]), 6),
                     "RMSE": round(float(best["RMSE"]), 6),
                     "MAPE": round(float(best["MAPE"]), 6),
@@ -1287,7 +1289,7 @@ def build_html_report(batch_cfg: Dict[str, Any], summary_df: pd.DataFrame, batch
             sections.append(f"<p><strong>Failure:</strong> {row.get('error_message', '')}</p>")
             continue
         sections.append("<ul>")
-        for key in ["status", "min_val_loss", "final_val_loss", "MAE", "RMSE", "MAPE", "sMAPE"]:
+        for key in ["status", "min_val_loss", "final_val_loss", "MSE", "MAE", "RMSE", "MAPE", "sMAPE"]:
             if key in row:
                 sections.append(f"<li>{key}: {row[key]}</li>")
         if "issue_note" in row and pd.notna(row["issue_note"]):
@@ -1398,6 +1400,7 @@ def build_markdown_report(
             "dataset",
             "mode",
             "best_model",
+            "MSE",
             "MAE",
             "RMSE",
             "MAPE",
@@ -1405,9 +1408,13 @@ def build_markdown_report(
             "min_val_loss",
             "final_val_loss",
         ]
+        for col in metrics_cols:
+            if col not in best_summary_df.columns:
+                best_summary_df[col] = np.nan
         metrics_df = best_summary_df[metrics_cols].copy()
-        for col in ["MAE", "RMSE", "MAPE", "sMAPE", "min_val_loss", "final_val_loss"]:
-            metrics_df[col] = metrics_df[col].map(lambda x: _float_text(x, digits=6))
+        for col in ["MSE", "MAE", "RMSE", "MAPE", "sMAPE", "min_val_loss", "final_val_loss"]:
+            if col in metrics_df:
+                metrics_df[col] = metrics_df[col].map(lambda x: _float_text(x, digits=6))
         lines.append(dataframe_to_markdown_table(metrics_df))
         if artifacts.get("best_model_summary_csv"):
             lines.extend(["", f"- CSV: {_markdown_file_link('best_model_summary.csv', artifacts['best_model_summary_csv'])}"])
@@ -1780,6 +1787,7 @@ def build_company_master_report(batch_results: List[BatchResult], output_dir: Pa
                 "dataset",
                 "mode",
                 "best_model",
+                "MSE",
                 "MAE",
                 "RMSE",
                 "MAPE",
@@ -1787,14 +1795,18 @@ def build_company_master_report(batch_results: List[BatchResult], output_dir: Pa
                 "min_val_loss",
                 "final_val_loss",
             ]
+            for col in metrics_cols:
+                if col not in best_df.columns:
+                    best_df[col] = np.nan
             metrics_df = best_df[metrics_cols].copy()
             metrics_df["dataset_order"] = metrics_df["dataset"].map(dataset_order).fillna(99)
             metrics_df["mode_order"] = metrics_df["mode"].map(mode_order).fillna(99)
             metrics_df = metrics_df.sort_values(["dataset_order", "mode_order"]).drop(
                 columns=["dataset_order", "mode_order"]
             )
-            for col in ["MAE", "RMSE", "MAPE", "sMAPE", "min_val_loss", "final_val_loss"]:
-                metrics_df[col] = metrics_df[col].map(lambda x: _float_text(x, digits=6))
+            for col in ["MSE", "MAE", "RMSE", "MAPE", "sMAPE", "min_val_loss", "final_val_loss"]:
+                if col in metrics_df:
+                    metrics_df[col] = metrics_df[col].map(lambda x: _float_text(x, digits=6))
             lines.append(dataframe_to_markdown_table(metrics_df))
         else:
             lines.append("요약 가능한 성공 run이 없습니다.")
