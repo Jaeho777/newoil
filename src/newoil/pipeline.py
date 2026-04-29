@@ -584,14 +584,13 @@ def save_loss_history(
     training_cfg: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
     training_cfg = training_cfg or {}
-    steps_per_epoch = max(int(training_cfg.get("estimated_steps_per_epoch") or 1), 1)
 
     train_df = pd.DataFrame(model.train_trajectories, columns=["step", "train_loss"])
     valid_df = pd.DataFrame(model.valid_trajectories, columns=["step", "valid_loss"])
     train_df["log_index"] = np.arange(1, len(train_df) + 1)
     valid_df["log_index"] = np.arange(1, len(valid_df) + 1)
-    train_df["epoch"] = derive_loss_epoch_axis(train_df, steps_per_epoch)
-    valid_df["epoch"] = derive_loss_epoch_axis(valid_df, steps_per_epoch)
+    train_df["epoch"] = derive_loss_epoch_axis(train_df)
+    valid_df["epoch"] = derive_loss_epoch_axis(valid_df)
 
     history_df = train_df.merge(valid_df, on="log_index", how="outer", suffixes=("_train", "_valid"))
     train_step_col = "step_train" if "step_train" in history_df.columns else None
@@ -628,17 +627,13 @@ def save_loss_history(
     return history_df
 
 
-def derive_loss_epoch_axis(history_df: pd.DataFrame, steps_per_epoch: int) -> pd.Series:
-    if history_df.empty or "step" not in history_df.columns:
+def derive_loss_epoch_axis(history_df: pd.DataFrame) -> pd.Series:
+    if history_df.empty:
         return pd.Series(dtype=float)
 
-    raw_step = pd.to_numeric(history_df["step"], errors="coerce")
-    has_usable_step_axis = raw_step.notna().sum() > 1 and raw_step.nunique(dropna=True) > 1
-    if has_usable_step_axis:
-        return raw_step / max(steps_per_epoch, 1)
-
-    # NeuralForecast can log repeated or reset step ids in some Colab/Lightning
-    # combinations. In that case the log order is the only reliable epoch axis.
+    # NeuralForecast trajectories expose a raw step id, but its meaning changes
+    # with windowing and validation cadence. The log order is the stable epoch
+    # proxy for our report curves.
     return history_df["log_index"].astype(float)
 
 
