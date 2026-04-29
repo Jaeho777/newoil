@@ -226,6 +226,17 @@ def build_model(
         early_stop_patience_steps=-1,
         step_size=1,
         learning_rate=2e-4,
+        optimizer=torch.optim.AdamW,
+        optimizer_kwargs={"weight_decay": 1e-4},
+        lr_scheduler=torch.optim.lr_scheduler.ReduceLROnPlateau,
+        lr_scheduler_kwargs={
+            "mode": "min",
+            "factor": 0.5,
+            "patience": 8,
+            "threshold": 0.001,
+            "threshold_mode": "rel",
+            "cooldown": 0,
+        },
         random_seed=random_seed,
         hist_exog_list=exog_cols,
         accelerator=accelerator,
@@ -304,6 +315,15 @@ def run_custom_itransformer(
         dropout=0.2,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=8,
+        threshold=0.001,
+        threshold_mode="rel",
+        cooldown=0,
+    )
     criterion = nn.MSELoss()
     loss_rows: List[Dict[str, Any]] = []
 
@@ -331,13 +351,19 @@ def run_custom_itransformer(
                 loss = criterion(pred, yb)
                 val_losses.append(float(loss.detach().cpu().item()))
 
+        train_mean = float(np.mean(train_losses)) if train_losses else np.nan
+        valid_mean = float(np.mean(val_losses)) if val_losses else np.nan
+        if np.isfinite(valid_mean):
+            scheduler.step(valid_mean)
+
         loss_rows.append(
             {
                 "epoch": epoch,
                 "step": epoch * cv_step_plan["estimated_steps_per_epoch"],
                 "log_index": epoch,
-                "train_loss": float(np.mean(train_losses)) if train_losses else np.nan,
-                "valid_loss": float(np.mean(val_losses)) if val_losses else np.nan,
+                "train_loss": train_mean,
+                "valid_loss": valid_mean,
+                "learning_rate": float(optimizer.param_groups[0]["lr"]),
                 "loss_history_source": "custom_itransformer",
             }
         )
@@ -568,15 +594,13 @@ def save_loss_overview(loss_histories: Dict[str, pd.DataFrame], output_path: Pat
     for ax, (model_name, history) in zip(axes[:, 0], loss_histories.items()):
         if "train_loss" in history.columns and history["train_loss"].notna().any():
             train = history[["epoch", "train_loss"]].dropna()
-            base = train["train_loss"].iloc[0] if len(train) and train["train_loss"].iloc[0] != 0 else 1.0
-            ax.plot(train["epoch"], train["train_loss"] / base, label="train_loss normalized", linewidth=1.5)
+            ax.plot(train["epoch"], train["train_loss"], label="train_loss", linewidth=1.5)
         if "valid_loss" in history.columns and history["valid_loss"].notna().any():
             valid = history[["epoch", "valid_loss"]].dropna()
-            base = valid["valid_loss"].iloc[0] if len(valid) and valid["valid_loss"].iloc[0] != 0 else 1.0
-            ax.plot(valid["epoch"], valid["valid_loss"] / base, label="valid_loss normalized", linewidth=1.8, marker="o")
+            ax.plot(valid["epoch"], valid["valid_loss"], label="valid_loss", linewidth=1.8, marker="o")
         ax.set_title(f"{model_name} CV-training MSE loss")
         ax.set_xlabel("epoch/log step")
-        ax.set_ylabel("normalized MSE loss")
+        ax.set_ylabel("MSE loss")
         ax.grid(True, alpha=0.25)
         ax.legend()
     fig.tight_layout()
@@ -636,6 +660,17 @@ def run(args: argparse.Namespace) -> Path:
         "target_transform": "log-diff",
         "exog_transform": "none",
         "neuralforecast_scaler_type": "identity",
+        "optimizer": "AdamW",
+        "weight_decay": 1e-4,
+        "lr_scheduler": {
+            "name": "ReduceLROnPlateau",
+            "mode": "min",
+            "factor": 0.5,
+            "patience": 8,
+            "threshold": 0.001,
+            "threshold_mode": "rel",
+            "cooldown": 0,
+        },
     }
     (output_root / "run_config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
@@ -747,7 +782,7 @@ def run(args: argparse.Namespace) -> Path:
     save_prediction_plot(predictions_all, prediction_plot)
     fold_paths_plot = output_root / "fold_forecast_paths.png"
     save_fold_forecast_paths_plot(predictions_all, panel, fold_paths_plot)
-    loss_plot = output_root / "loss_curves_normalized_overview.png"
+    loss_plot = output_root / "loss_curves_overview.png"
     save_loss_overview(loss_histories, loss_plot)
 
     print(f"\nOutput root: {output_root}")
