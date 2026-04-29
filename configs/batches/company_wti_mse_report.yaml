@@ -18,13 +18,13 @@ dataset_refs:
 training_defaults:
   input_size: 64
   batch_size: 32
-  valid_batch_size: 8
-  windows_batch_size: null
-  inference_windows_batch_size: -1
-  max_steps: 1000000
+  valid_batch_size: 32
+  windows_batch_size: 128
+  inference_windows_batch_size: 1024
+  max_steps: 200
   scaler_type: "revin"
   val_check_steps: 1
-  early_stop_patience_steps: 8
+  early_stop_patience_steps: 30
   model_step_size: 1
   loss: "mse"
   learning_rate: 0.0001
@@ -35,7 +35,7 @@ training_defaults:
     name: "ReduceLROnPlateau"
     mode: "min"
     factor: 0.5
-    patience: 3
+    patience: 8
     threshold: 0.001
     threshold_mode: "rel"
     cooldown: 0
@@ -54,7 +54,7 @@ scenarios:
     dataset: "daily"
     mode: "univariate"
     horizon: 12
-    val_size: 24
+    val_size: 60
     test_size: 12
     report:
       lookback_plot: 120
@@ -63,7 +63,7 @@ scenarios:
     dataset: "daily"
     mode: "multivariate"
     horizon: 12
-    val_size: 24
+    val_size: 60
     test_size: 12
     report:
       lookback_plot: 120
@@ -72,7 +72,7 @@ scenarios:
     dataset: "weekly"
     mode: "univariate"
     horizon: 2
-    val_size: 16
+    val_size: 52
     test_size: 2
     report:
       lookback_plot: 60
@@ -81,7 +81,7 @@ scenarios:
     dataset: "weekly"
     mode: "multivariate"
     horizon: 2
-    val_size: 16
+    val_size: 52
     test_size: 2
     report:
       lookback_plot: 60

@@ -1,5 +1,5 @@
-name: "company_wti_mse_scaled_regularized"
-description: "Company-facing combined daily and weekly uni vs multi comparison with ReVIN scaling and model-specific regularization."
+name: "company_wti_mae_robust_stable"
+description: "Reference-notebook-inspired daily and weekly uni vs multi comparison with robust scaling, target MAE loss, longer validation, and less aggressive early stopping."
 start_date: "2011-01-01"
 feature_manifest_path: "configs/manifests/wti_feature_sets.yaml"
 
@@ -16,18 +16,18 @@ dataset_refs:
   weekly: "configs/papers_weekly.yaml"
 
 training_defaults:
-  input_size: 64
+  input_size: 52
   batch_size: 32
-  valid_batch_size: 8
-  windows_batch_size: null
-  inference_windows_batch_size: -1
-  max_steps: 1000000
-  scaler_type: "revin"
+  valid_batch_size: 32
+  windows_batch_size: 128
+  inference_windows_batch_size: 1024
+  max_steps: 200
+  scaler_type: "robust"
   val_check_steps: 1
-  early_stop_patience_steps: 8
+  early_stop_patience_steps: 30
   model_step_size: 1
-  loss: "mse"
-  learning_rate: 0.0001
+  loss: "mae"
+  learning_rate: 0.0002
   optimizer:
     name: "adamw"
     kwargs:
@@ -36,7 +36,7 @@ training_defaults:
     name: "ReduceLROnPlateau"
     mode: "min"
     factor: 0.5
-    patience: 3
+    patience: 8
     threshold: 0.001
     threshold_mode: "rel"
     cooldown: 0
@@ -49,16 +49,18 @@ training_defaults:
 model_training_overrides:
   GRU:
     model_kwargs:
-      encoder_hidden_size: 64
-      decoder_hidden_size: 64
-      encoder_dropout: 0.2
+      encoder_hidden_size: 48
+      decoder_hidden_size: 48
+      encoder_dropout: 0.25
   TimeXer:
+    learning_rate: 0.0003
     model_kwargs:
       hidden_size: 128
       n_heads: 4
-      d_ff: 256
-      dropout: 0.2
+      d_ff: 512
+      dropout: 0.15
   iTransformer:
+    learning_rate: 0.0003
     model_kwargs:
       hidden_size: 128
       n_heads: 4
@@ -70,38 +72,38 @@ report:
   x_axis: "epoch"
 
 scenarios:
-  - name: "uni_daily_h12_scaled_regularized"
+  - name: "uni_daily_h12_mae_robust_stable"
     dataset: "daily"
     mode: "univariate"
     horizon: 12
-    val_size: 24
+    val_size: 60
     test_size: 12
     report:
       lookback_plot: 120
 
-  - name: "multi_daily_h12_scaled_regularized"
+  - name: "multi_daily_h12_mae_robust_stable"
     dataset: "daily"
     mode: "multivariate"
     horizon: 12
-    val_size: 24
+    val_size: 60
     test_size: 12
     report:
       lookback_plot: 120
 
-  - name: "uni_weekly_h2_scaled_regularized"
+  - name: "uni_weekly_h2_mae_robust_stable"
     dataset: "weekly"
     mode: "univariate"
     horizon: 2
-    val_size: 16
+    val_size: 52
     test_size: 2
     report:
       lookback_plot: 60
 
-  - name: "multi_weekly_h2_scaled_regularized"
+  - name: "multi_weekly_h2_mae_robust_stable"
     dataset: "weekly"
     mode: "multivariate"
     horizon: 2
-    val_size: 16
+    val_size: 52
     test_size: 2
     report:
       lookback_plot: 60
