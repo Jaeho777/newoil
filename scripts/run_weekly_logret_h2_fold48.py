@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -142,14 +142,14 @@ def build_model(
             encoder_dropout=0.25,
         )
     if model_name == "TimeXer":
+        timexer_kwargs = {**common, "learning_rate": 3e-4}
         return TimeXer(
-            **common,
+            **timexer_kwargs,
             n_series=1,
             hidden_size=128,
             n_heads=4,
             d_ff=512,
             dropout=0.15,
-            learning_rate=3e-4,
         )
     raise ValueError(f"Unsupported model for historical exogenous CV: {model_name}")
 
@@ -324,7 +324,7 @@ def run(args: argparse.Namespace) -> Path:
         max_steps_override=args.max_steps,
     )
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     output_root = args.output_root.resolve() / f"weekly_logret_h2_fold48_{timestamp}"
     output_root.mkdir(parents=True, exist_ok=True)
 
