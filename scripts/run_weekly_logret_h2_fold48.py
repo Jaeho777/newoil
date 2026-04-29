@@ -36,10 +36,10 @@ UNIQUE_ID = "WTI_log_return"
 DEFAULT_MODELS = ["GRU", "TimeXer"]
 
 
-def detect_accelerator() -> tuple[str, int]:
+def detect_accelerator(requested_devices: int) -> tuple[str, int]:
     if torch.cuda.is_available():
-        device_count = torch.cuda.device_count()
-        return "gpu", -1 if device_count > 1 else 1
+        device_count = max(torch.cuda.device_count(), 1)
+        return "gpu", max(min(int(requested_devices), device_count), 1)
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return "mps", 1
     return "cpu", 1
@@ -297,7 +297,9 @@ def run(args: argparse.Namespace) -> Path:
     pipeline.ensure_neuralforecast_runtime()
     NeuralForecast = pipeline.NeuralForecast
 
-    accelerator, devices = detect_accelerator()
+    accelerator, devices = detect_accelerator(args.devices)
+    if accelerator == "gpu":
+        torch.set_float32_matmul_precision(args.matmul_precision)
     panel, model_panel, exog_cols, metadata = weekly_panel(repo_root)
     nf_df = make_nf_df(model_panel, exog_cols)
     cv_train_length = max(
@@ -342,6 +344,7 @@ def run(args: argparse.Namespace) -> Path:
         "models": args.models,
         "accelerator": accelerator,
         "devices": devices,
+        "matmul_precision": args.matmul_precision if accelerator == "gpu" else "",
         "target_transform": "log-diff",
         "exog_transform": "none",
     }
@@ -354,6 +357,7 @@ def run(args: argparse.Namespace) -> Path:
         f"loss-plot max_steps={loss_step_plan['max_steps']} "
         f"({loss_step_plan['estimated_steps_per_epoch']} steps/epoch)"
     )
+    print(f"[DEVICE] accelerator={accelerator}, devices={devices}")
 
     all_predictions = []
     summary_rows = []
@@ -469,6 +473,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional hard cap. Leave unset to run the epoch-equivalent step budget.",
+    )
+    parser.add_argument(
+        "--devices",
+        type=int,
+        default=1,
+        help="Number of GPU devices. Default is 1 to avoid DDP/NCCL failures on multi-GPU hosts.",
+    )
+    parser.add_argument(
+        "--matmul-precision",
+        choices=["highest", "high", "medium"],
+        default="high",
+        help="Float32 matmul precision for CUDA Tensor Cores.",
     )
     parser.add_argument("--seed", type=int, default=1)
     return parser.parse_args()
