@@ -122,6 +122,17 @@ LR_SCHEDULER_REGISTRY = {
 }
 
 
+def build_loss_csv_logger(run_dir: Path):
+    try:
+        from lightning.pytorch.loggers import CSVLogger
+    except Exception:
+        try:
+            from pytorch_lightning.loggers import CSVLogger
+        except Exception:
+            return None
+    return CSVLogger(save_dir=str(run_dir), name="loss_logs")
+
+
 def patch_neuralforecast_reduce_on_plateau_monitor() -> None:
     if BaseModel is None:
         raise RuntimeError("NeuralForecast runtime has not been loaded yet.")
@@ -585,6 +596,11 @@ def save_loss_history(
 ) -> pd.DataFrame:
     training_cfg = training_cfg or {}
 
+    csv_history = load_csv_logger_loss_history(run_dir)
+    if not csv_history.empty:
+        csv_history.to_csv(run_dir / "loss_history.csv", index=False)
+        return csv_history
+
     train_df = pd.DataFrame(model.train_trajectories, columns=["step", "train_loss"])
     valid_df = pd.DataFrame(model.valid_trajectories, columns=["step", "valid_loss"])
     train_df["log_index"] = np.arange(1, len(train_df) + 1)
@@ -625,6 +641,63 @@ def save_loss_history(
 
     history_df.to_csv(run_dir / "loss_history.csv", index=False)
     return history_df
+
+
+def load_csv_logger_loss_history(run_dir: Path) -> pd.DataFrame:
+    candidates = sorted(run_dir.glob("**/metrics.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in candidates:
+        try:
+            metrics = pd.read_csv(path)
+        except Exception:
+            continue
+
+        train_col = next(
+            (
+                column
+                for column in ["train_loss_epoch", "train_loss", "train_loss_step"]
+                if column in metrics.columns and metrics[column].notna().any()
+            ),
+            None,
+        )
+        valid_col = next(
+            (
+                column
+                for column in ["valid_loss", "ptl/val_loss", "val_loss"]
+                if column in metrics.columns and metrics[column].notna().any()
+            ),
+            None,
+        )
+        if train_col is None and valid_col is None:
+            continue
+
+        history = pd.DataFrame(index=metrics.index)
+        if "step" in metrics.columns:
+            history["step"] = pd.to_numeric(metrics["step"], errors="coerce")
+        else:
+            history["step"] = np.arange(1, len(metrics) + 1, dtype=float)
+
+        if "epoch" in metrics.columns:
+            history["epoch"] = pd.to_numeric(metrics["epoch"], errors="coerce")
+        else:
+            history["epoch"] = history["step"]
+
+        history["train_loss"] = (
+            pd.to_numeric(metrics[train_col], errors="coerce") if train_col is not None else np.nan
+        )
+        history["valid_loss"] = (
+            pd.to_numeric(metrics[valid_col], errors="coerce") if valid_col is not None else np.nan
+        )
+        history = history.dropna(subset=["train_loss", "valid_loss"], how="all").copy()
+        if history.empty:
+            continue
+
+        history["step"] = history["step"].ffill().bfill()
+        history["epoch"] = history["epoch"].ffill().bfill()
+        history["log_index"] = np.arange(1, len(history) + 1)
+        history["loss_history_source"] = f"csv_logger:{path.relative_to(run_dir).as_posix()}"
+        return history[["train_loss", "log_index", "valid_loss", "step", "epoch", "loss_history_source"]]
+
+    return pd.DataFrame()
 
 
 def derive_loss_epoch_axis(history_df: pd.DataFrame) -> pd.Series:
@@ -1859,6 +1932,11 @@ def run_single_experiment(
         training_cfg=training_cfg,
         random_seed=random_seed,
     )
+    loss_csv_logger = build_loss_csv_logger(run_dir)
+    if loss_csv_logger is not None:
+        # Match the reference notebook: plot target-level epoch metrics from CSVLogger
+        # instead of raw NeuralForecast trajectory buffers when available.
+        kwargs["logger"] = loss_csv_logger
     model_cls = MODEL_REGISTRY[model_name]
     model = model_cls(**kwargs)
     nf = NeuralForecast(models=[model], freq=dataset_cfg["data"]["freq"])
@@ -1904,6 +1982,11 @@ def run_single_experiment(
     fitted_model = nf.models[0]
     history_df = save_loss_history(fitted_model, run_dir, training_cfg=training_cfg)
     diagnostics = diagnose_run(history_df)
+    loss_history_source = (
+        str(history_df["loss_history_source"].dropna().iloc[0])
+        if "loss_history_source" in history_df.columns and history_df["loss_history_source"].notna().any()
+        else "neuralforecast_trajectories"
+    )
     x_column = "epoch" if x_axis_mode == "epoch" and "epoch" in history_df.columns else "step"
     x_label = "Epoch" if x_column == "epoch" else "Global step"
     x_max = training_cfg.get("requested_max_epochs") if x_column == "epoch" else None
@@ -1947,6 +2030,7 @@ def run_single_experiment(
         "exog_transform": exog_transform,
         "input_size": input_size,
         "loss_scale": loss_scale,
+        "loss_history_source": loss_history_source,
         "rows_after_preprocessing": int(len(original_panel)),
         "rows_after_transform": int(len(transformed_panel)),
         "leakage_checks_passed": True,
@@ -1974,6 +2058,7 @@ def run_single_experiment(
         "input_size": input_size,
         "loss_scale": loss_scale,
         "x_axis": x_label,
+        "loss_history_source": loss_history_source,
         "loss_name": str(training_cfg.get("loss", "default")).lower(),
         "scaler_type": training_cfg.get("scaler_type", "default"),
         "train_start_date": train_dates.min().strftime("%Y-%m-%d") if len(train_dates) else "",
