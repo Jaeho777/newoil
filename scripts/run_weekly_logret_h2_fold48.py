@@ -263,6 +263,70 @@ def save_prediction_plot(all_predictions: pd.DataFrame, output_path: Path) -> No
     plt.close(fig)
 
 
+def save_fold_forecast_paths_plot(
+    all_predictions: pd.DataFrame,
+    panel: pd.DataFrame,
+    output_path: Path,
+    lookback_weeks: int = 40,
+) -> None:
+    if all_predictions.empty:
+        return
+
+    model_names = list(all_predictions["model"].dropna().unique())
+    n_models = max(len(model_names), 1)
+    fig, axes = plt.subplots(n_models, 1, figsize=(13, 4.2 * n_models), squeeze=False, sharex=True)
+
+    min_cutoff = pd.to_datetime(all_predictions["cutoff"]).min()
+    max_forecast_date = pd.to_datetime(all_predictions["ds"]).max()
+    plot_start = min_cutoff - pd.Timedelta(weeks=lookback_weeks)
+    actual = (
+        panel.loc[(panel.index >= plot_start) & (panel.index <= max_forecast_date), [TARGET_COL]]
+        .reset_index()
+        .rename(columns={"ds": "ds", TARGET_COL: "actual_price"})
+    )
+
+    for ax, model_name in zip(axes[:, 0], model_names):
+        model_predictions = all_predictions[all_predictions["model"] == model_name].copy()
+        ax.plot(
+            actual["ds"],
+            actual["actual_price"],
+            color="black",
+            linewidth=2.1,
+            label="actual",
+        )
+
+        first_forecast = True
+        for cutoff, group in model_predictions.sort_values(["cutoff", "ds"]).groupby("cutoff", sort=True):
+            cutoff = pd.Timestamp(cutoff)
+            if cutoff not in panel.index:
+                continue
+            path_dates = [cutoff, *pd.to_datetime(group["ds"]).tolist()]
+            path_values = [float(panel.loc[cutoff, TARGET_COL]), *group["predicted_price"].astype(float).tolist()]
+            ax.axvline(cutoff, color="tab:blue", linestyle=":", linewidth=0.7, alpha=0.22)
+            ax.plot(
+                path_dates,
+                path_values,
+                color="tab:blue",
+                marker="o",
+                linewidth=1.1,
+                markersize=3.6,
+                alpha=0.9,
+                label=f"{model_name} forecast paths" if first_forecast else None,
+            )
+            first_forecast = False
+
+        ax.set_title(f"{TARGET_COL} - {model_name} continual actual forecast {model_predictions['cutoff'].nunique()} folds")
+        ax.set_ylabel("price")
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="upper center", ncols=2)
+
+    axes[-1, 0].set_xlabel("ds")
+    fig.autofmt_xdate()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
 def save_loss_overview(loss_histories: Dict[str, pd.DataFrame], output_path: Path) -> None:
     n_models = max(len(loss_histories), 1)
     fig, axes = plt.subplots(n_models, 1, figsize=(11, 3.8 * n_models), squeeze=False)
@@ -447,12 +511,15 @@ def run(args: argparse.Namespace) -> Path:
 
     prediction_plot = output_root / "actual_vs_predicted_price.png"
     save_prediction_plot(predictions_all, prediction_plot)
+    fold_paths_plot = output_root / "fold_forecast_paths.png"
+    save_fold_forecast_paths_plot(predictions_all, panel, fold_paths_plot)
     loss_plot = output_root / "loss_curves_normalized_overview.png"
     save_loss_overview(loss_histories, loss_plot)
 
     print(f"\nOutput root: {output_root}")
     print(f"Metrics summary: {output_root / 'fold48_metrics_summary.csv'}")
     print(f"Prediction graph: {prediction_plot}")
+    print(f"Fold paths graph: {fold_paths_plot}")
     print(f"Loss graph: {loss_plot}")
     return output_root
 
