@@ -645,10 +645,14 @@ def plot_loss_curves(
     x_column: str = "step",
     x_label: str = "Global step",
     x_max: Optional[float] = None,
+    normalize_mode: str = "none",
 ) -> None:
     y_scale = str(y_scale or "linear").lower().strip()
     if y_scale not in {"linear", "log", "symlog"}:
         raise ValueError(f"Unsupported loss curve y-scale: {y_scale}")
+    normalize_mode = str(normalize_mode or "none").lower().replace("_", "-").strip()
+    if normalize_mode not in {"none", "initial", "first"}:
+        raise ValueError(f"Unsupported loss curve normalization: {normalize_mode}")
     if x_column not in history_df.columns:
         x_column = "step"
         x_label = "Global step"
@@ -675,10 +679,15 @@ def plot_loss_curves(
                 else valid_rows["valid_loss"]
             )
 
+    if normalize_mode in {"initial", "first"}:
+        train_loss = _normalize_loss_series(train_loss)
+        valid_loss = _normalize_loss_series(valid_loss)
+
     train_scale = _series_scale(train_loss)
     valid_scale = _series_scale(valid_loss)
     use_dual_axis = (
-        y_scale == "linear"
+        normalize_mode == "none"
+        and y_scale == "linear"
         and math.isfinite(train_scale)
         and math.isfinite(valid_scale)
         and min(train_scale, valid_scale) > 0
@@ -743,7 +752,8 @@ def plot_loss_curves(
     ax.set_title(title)
     ax.set_xlabel(x_label)
     if not use_dual_axis:
-        ax.set_ylabel("Loss")
+        ylabel = "Normalized loss (first logged value = 1.0)" if normalize_mode != "none" else "Loss"
+        ax.set_ylabel(ylabel)
     if x_max is not None and math.isfinite(float(x_max)) and float(x_max) > 0:
         ax.set_xlim(left=0, right=float(x_max))
     if plotted:
@@ -759,6 +769,15 @@ def _series_scale(values: pd.Series) -> float:
     if numeric.empty:
         return float("nan")
     return float(numeric.median())
+
+
+def _normalize_loss_series(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    baseline_candidates = numeric.dropna()
+    baseline_candidates = baseline_candidates[baseline_candidates.abs() > 0]
+    if baseline_candidates.empty:
+        return numeric
+    return numeric / float(baseline_candidates.iloc[0])
 
 
 def summarize_run_issues(summary: Dict[str, Any]) -> Dict[str, str]:
@@ -1204,10 +1223,20 @@ def build_html_report(batch_cfg: Dict[str, Any], summary_df: pd.DataFrame, batch
             sections.append(f"<li><strong>Next action</strong>: {row['next_action_note']}</li>")
         sections.append("</ul>")
         loss_curve = Path(str(row["artifact_dir"])) / "loss_curve.png"
+        normalized_loss_curve = Path(str(row["artifact_dir"])) / "loss_curve_normalized.png"
         forecast_plot = Path(str(row["artifact_dir"])) / "forecast_plot.png"
         if loss_curve.exists():
             rel_loss_curve = loss_curve.relative_to(batch_dir) if batch_dir in loss_curve.parents else loss_curve
+            sections.append("<p><strong>Raw MSE loss curve</strong></p>")
             sections.append(f"<img src='{rel_loss_curve.as_posix()}' width='900'>")
+        if normalized_loss_curve.exists():
+            rel_norm_loss_curve = (
+                normalized_loss_curve.relative_to(batch_dir)
+                if batch_dir in normalized_loss_curve.parents
+                else normalized_loss_curve
+            )
+            sections.append("<p><strong>Normalized loss curve (first logged value = 1.0)</strong></p>")
+            sections.append(f"<img src='{rel_norm_loss_curve.as_posix()}' width='900'>")
         if forecast_plot.exists():
             rel_forecast_plot = (
                 forecast_plot.relative_to(batch_dir) if batch_dir in forecast_plot.parents else forecast_plot
@@ -1601,9 +1630,15 @@ def build_company_master_report(batch_results: List[BatchResult], output_dir: Pa
                 lines.extend(["", f"### {_mode_label(mode)} 모델별 그래프", ""])
                 for _, row in mode_rows.iterrows():
                     loss_curve_path = Path(str(row["artifact_dir"])) / "loss_curve.png"
+                    normalized_loss_curve_path = Path(str(row["artifact_dir"])) / "loss_curve_normalized.png"
                     if loss_curve_path.exists():
                         alt_text = f"{row['run_name']} loss curve"
-                        lines.append(f"- {row['model']}: {_markdown_image(loss_curve_path, alt_text)}")
+                        lines.append(f"- {row['model']} raw MSE: {_markdown_image(loss_curve_path, alt_text)}")
+                    if normalized_loss_curve_path.exists():
+                        alt_text = f"{row['run_name']} normalized loss curve"
+                        lines.append(
+                            f"- {row['model']} normalized: {_markdown_image(normalized_loss_curve_path, alt_text)}"
+                        )
 
         if "daily" in dataset_map:
             result = dataset_map["daily"]
@@ -1620,9 +1655,15 @@ def build_company_master_report(batch_results: List[BatchResult], output_dir: Pa
                 lines.extend(["", f"### {_mode_label(mode)} 모델별 그래프", ""])
                 for _, row in mode_rows.iterrows():
                     loss_curve_path = Path(str(row["artifact_dir"])) / "loss_curve.png"
+                    normalized_loss_curve_path = Path(str(row["artifact_dir"])) / "loss_curve_normalized.png"
                     if loss_curve_path.exists():
                         alt_text = f"{row['run_name']} loss curve"
-                        lines.append(f"- {row['model']}: {_markdown_image(loss_curve_path, alt_text)}")
+                        lines.append(f"- {row['model']} raw MSE: {_markdown_image(loss_curve_path, alt_text)}")
+                    if normalized_loss_curve_path.exists():
+                        alt_text = f"{row['run_name']} normalized loss curve"
+                        lines.append(
+                            f"- {row['model']} normalized: {_markdown_image(normalized_loss_curve_path, alt_text)}"
+                        )
 
         if "daily" in dataset_map:
             best_daily = (
@@ -1874,6 +1915,16 @@ def run_single_experiment(
         x_column=x_column,
         x_label=x_label,
         x_max=x_max,
+    )
+    plot_loss_curves(
+        history_df,
+        f"{scenario_cfg['name']} - {model_name} normalized loss curves",
+        run_dir / "loss_curve_normalized.png",
+        y_scale="linear",
+        x_column=x_column,
+        x_label=x_label,
+        x_max=x_max,
+        normalize_mode="initial",
     )
     plot_forecast(
         history_target=history_target,
