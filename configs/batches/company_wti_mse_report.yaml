@@ -24,7 +24,7 @@ training_defaults:
   max_steps: 200
   scaler_type: "revin"
   val_check_steps: 1
-  early_stop_patience_steps: 30
+  early_stop_patience_steps: 50
   model_step_size: 1
   loss: "mse"
   learning_rate: 0.0001
