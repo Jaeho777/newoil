@@ -374,6 +374,25 @@ def save_metrics_plot(metrics: pd.DataFrame, output_path: Path) -> None:
     plt.close(fig)
 
 
+def markdown_table(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return "_No rows._"
+    view = frame.copy()
+    for column in view.columns:
+        if pd.api.types.is_float_dtype(view[column]):
+            view[column] = view[column].map(lambda value: "" if pd.isna(value) else f"{float(value):.6g}")
+        else:
+            view[column] = view[column].map(lambda value: "" if pd.isna(value) else str(value))
+    headers = [str(column) for column in view.columns]
+    rows = view.astype(str).values.tolist()
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in rows)
+    return "\n".join(lines)
+
+
 def run(args: argparse.Namespace) -> Path:
     repo_root = args.repo_root.resolve()
     output_root = args.output_root.resolve() / f"weekly_rag4cts_overlay_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
@@ -501,6 +520,11 @@ def run(args: argparse.Namespace) -> Path:
 
         query_history_start = origin_idx - args.history_length + 1
         max_candidate_end = max([candidate.end_idx for candidate in [*target_retrieved, *feature_retrieved]], default=-1)
+        deep_origin_predictions = deep_predictions[deep_predictions["cutoff"] == origin_dt] if not deep_predictions.empty else pd.DataFrame()
+        deep_prediction_coverage = True
+        if not deep_predictions.empty:
+            deep_prediction_coverage = all(len(group) >= args.horizon for _, group in deep_origin_predictions.groupby("model"))
+            deep_prediction_coverage = bool(deep_prediction_coverage and not deep_origin_predictions.empty)
         audit_rows.append(
             {
                 "fold": fold,
@@ -509,7 +533,8 @@ def run(args: argparse.Namespace) -> Path:
                 "candidate_end_before_query_history": bool(max_candidate_end < query_history_start),
                 "query_uses_only_history": True,
                 "future_exog_not_used": True,
-                "deep_prediction_cutoff_aligned": True if deep_predictions.empty else bool((deep_predictions[deep_predictions["cutoff"] == origin_dt]["ds"] > origin_dt).all()),
+                "deep_prediction_cutoff_aligned": True if deep_predictions.empty else bool((deep_origin_predictions["ds"] > origin_dt).all()),
+                "deep_prediction_coverage": deep_prediction_coverage,
             }
         )
 
@@ -571,10 +596,10 @@ def run(args: argparse.Namespace) -> Path:
         "- The leakage audit below must remain all `True`; otherwise the results should not be used.",
         "",
         "## Metrics",
-        metrics.to_markdown(index=False),
+        markdown_table(metrics),
         "",
         "## Leakage Audit",
-        leakage_audit.to_markdown(index=False),
+        markdown_table(leakage_audit),
     ]
     (output_root / "report.md").write_text("\n".join(report), encoding="utf-8")
 
