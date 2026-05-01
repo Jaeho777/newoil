@@ -46,6 +46,7 @@ class CandidateWindow:
     future_returns: List[float]
     future_prices: List[float]
     distance: float
+    event_label: str
     rank: int = -1
 
 
@@ -129,8 +130,34 @@ def temporal_weights(history_length: int, n_features: int, decay: float) -> np.n
     return np.repeat(point_weights[:, None], n_features, axis=1)
 
 
+def apply_tail_boost(weights: np.ndarray, boost_weeks: int, boost: float) -> np.ndarray:
+    adjusted = weights.copy()
+    if boost_weeks > 0 and boost > 0:
+        adjusted[-boost_weeks:, :] *= boost
+    return adjusted / (adjusted.mean() + EPS)
+
+
 def weighted_distance(query: np.ndarray, candidate: np.ndarray, weights: np.ndarray) -> float:
     return float(np.sqrt(np.sum(weights * (query - candidate) ** 2) + EPS))
+
+
+def binned_mutual_information(x: np.ndarray, y: np.ndarray, bins: int = 6) -> float:
+    valid = np.isfinite(x) & np.isfinite(y)
+    x = x[valid]
+    y = y[valid]
+    if len(x) < bins * 3 or np.nanstd(x) < EPS or np.nanstd(y) < EPS:
+        return 0.0
+    try:
+        x_bin = pd.qcut(x, q=min(bins, len(np.unique(x))), labels=False, duplicates="drop")
+        y_bin = pd.qcut(y, q=min(bins, len(np.unique(y))), labels=False, duplicates="drop")
+    except ValueError:
+        return 0.0
+    joint = pd.crosstab(x_bin, y_bin, normalize=True).to_numpy(dtype=float)
+    px = joint.sum(axis=1, keepdims=True)
+    py = joint.sum(axis=0, keepdims=True)
+    expected = px @ py
+    mask = (joint > 0) & (expected > 0)
+    return float(np.sum(joint[mask] * np.log(joint[mask] / expected[mask])))
 
 
 def actual_returns(panel: pd.DataFrame, origin_idx: int, horizon: int) -> np.ndarray:
@@ -140,6 +167,91 @@ def actual_returns(panel: pd.DataFrame, origin_idx: int, horizon: int) -> np.nda
         now_price = float(panel.loc[origin_idx + h, TARGET_COL])
         returns.append(math.log(max(now_price, EPS) / max(prev_price, EPS)))
     return np.asarray(returns, dtype=float)
+
+
+def historical_future_returns(panel: pd.DataFrame, start_origin: int, end_origin: int, horizon: int) -> Tuple[List[int], np.ndarray]:
+    origins = []
+    returns = []
+    for origin_idx in range(start_origin, end_origin + 1):
+        if origin_idx + horizon >= len(panel):
+            break
+        origins.append(origin_idx)
+        returns.append(float(np.sum(actual_returns(panel, origin_idx, horizon))))
+    return origins, np.asarray(returns, dtype=float)
+
+
+def compute_feature_weights(
+    panel: pd.DataFrame,
+    features: pd.DataFrame,
+    feature_cols: Sequence[str],
+    origin_idx: int,
+    history_length: int,
+    horizon: int,
+    tail_quantile: float,
+    shock_likely: bool,
+) -> np.ndarray:
+    max_train_origin = origin_idx - horizon
+    origins, y = historical_future_returns(panel, history_length - 1, max_train_origin, horizon)
+    if len(origins) < 30:
+        return np.ones(len(feature_cols), dtype=float)
+
+    global_scores = []
+    tail_scores = []
+    tail_cutoff = np.quantile(np.abs(y), tail_quantile) if len(y) else np.inf
+    tail_mask = np.abs(y) >= tail_cutoff
+    for col in feature_cols:
+        x = features.loc[origins, col].to_numpy(dtype=float)
+        global_scores.append(binned_mutual_information(x, y))
+        tail_scores.append(binned_mutual_information(x[tail_mask], y[tail_mask]) if tail_mask.sum() >= 20 else 0.0)
+
+    global_scores = np.asarray(global_scores, dtype=float)
+    tail_scores = np.asarray(tail_scores, dtype=float)
+    if global_scores.max() > EPS:
+        global_scores = global_scores / (global_scores.max() + EPS)
+    if tail_scores.max() > EPS:
+        tail_scores = tail_scores / (tail_scores.max() + EPS)
+    scores = 0.3 * global_scores + 0.7 * tail_scores if shock_likely else global_scores
+
+    weights = 0.25 + scores
+    for idx, col in enumerate(feature_cols):
+        if feature_variable(col) == TARGET_COL:
+            weights[idx] = max(weights[idx], 1.0)
+    return weights / (weights.mean() + EPS)
+
+
+def is_shock_likely_at_origin(
+    panel: pd.DataFrame,
+    features: pd.DataFrame,
+    origin_idx: int,
+    target_cols: Sequence[str],
+    shock_quantile: float,
+) -> Tuple[bool, str, float]:
+    recent_start = max(0, origin_idx - 3)
+    vol_cols = [col for col in target_cols if col.startswith("vol__")]
+    slope_cols = [col for col in target_cols if col.startswith("slope__")]
+    recent_vol = float(features.loc[recent_start:origin_idx, vol_cols].mean().mean()) if vol_cols else 0.0
+    vol_threshold = float(features.loc[:origin_idx, vol_cols].mean(axis=1).quantile(shock_quantile)) if vol_cols else np.inf
+    recent_slope = float(features.loc[recent_start:origin_idx, slope_cols].mean().mean()) if slope_cols else 0.0
+    recent_return = float(np.log(panel.loc[origin_idx, TARGET_COL] / max(panel.loc[recent_start, TARGET_COL], EPS)))
+    shock_likely = bool(recent_vol > vol_threshold)
+    direction_signal = recent_return if abs(recent_return) >= abs(recent_slope) else recent_slope
+    query_event_label = "high_event" if direction_signal >= 0 else "low_event"
+    return shock_likely, query_event_label, recent_vol
+
+
+def event_thresholds(panel: pd.DataFrame, max_origin: int, history_length: int, horizon: int, event_quantile: float) -> Tuple[float, float]:
+    _, returns = historical_future_returns(panel, history_length - 1, max_origin, horizon)
+    if len(returns) < 30:
+        return np.inf, -np.inf
+    return float(np.quantile(returns, 1.0 - event_quantile)), float(np.quantile(returns, event_quantile))
+
+
+def label_event(cum_return: float, high_threshold: float, low_threshold: float) -> str:
+    if cum_return >= high_threshold:
+        return "high_event"
+    if cum_return <= low_threshold:
+        return "low_event"
+    return "normal"
 
 
 def returns_to_prices(origin_price: float, returns: np.ndarray) -> np.ndarray:
@@ -178,6 +290,13 @@ def retrieve_windows(
     horizon: int,
     top_k: int,
     decay: float,
+    feature_weights: Optional[np.ndarray] = None,
+    tail_boost_weeks: int = 0,
+    tail_boost: float = 1.0,
+    event_threshold_pair: Optional[Tuple[float, float]] = None,
+    shock_event_label: Optional[str] = None,
+    event_distance_discount: float = 0.85,
+    event_distance_penalty: float = 1.15,
 ) -> List[CandidateWindow]:
     query_history_start = origin_idx - history_length + 1
     max_candidate_origin = query_history_start - horizon - 1
@@ -187,12 +306,22 @@ def retrieve_windows(
     med, scale = causal_scale(features, origin_idx, feature_cols)
     query = scaled_window(features, query_history_start, origin_idx, feature_cols, med, scale)
     weights = temporal_weights(history_length, len(feature_cols), decay)
+    if feature_weights is not None:
+        weights = weights * np.asarray(feature_weights, dtype=float)[None, :]
+    weights = apply_tail_boost(weights, tail_boost_weeks, tail_boost)
+    high_threshold, low_threshold = event_threshold_pair if event_threshold_pair is not None else (np.inf, -np.inf)
     candidates: List[CandidateWindow] = []
     for candidate_origin in range(min_candidate_origin, max_candidate_origin + 1):
         start_idx = candidate_origin - history_length + 1
         candidate = scaled_window(features, start_idx, candidate_origin, feature_cols, med, scale)
         distance = weighted_distance(query, candidate, weights)
         future_returns = actual_returns(panel, candidate_origin, horizon).tolist()
+        event_label = label_event(float(np.sum(future_returns)), high_threshold, low_threshold)
+        if shock_event_label is not None:
+            if event_label == shock_event_label:
+                distance *= event_distance_discount
+            elif event_label == "normal":
+                distance *= event_distance_penalty
         future_prices = panel.loc[candidate_origin + 1:candidate_origin + horizon, TARGET_COL].astype(float).tolist()
         candidates.append(
             CandidateWindow(
@@ -205,6 +334,7 @@ def retrieve_windows(
                 future_returns=future_returns,
                 future_prices=future_prices,
                 distance=distance,
+                event_label=event_label,
             )
         )
     candidates = sorted(candidates, key=lambda item: item.distance)[:top_k]
@@ -333,6 +463,58 @@ def compute_metrics(records: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(["price_MAPE", "return_MAE"]).reset_index(drop=True)
 
 
+def make_per_fold_metrics(records: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    grouped = records.sort_values(["fold", "horizon"]).groupby(["method", "fold"], sort=False)
+    for (method, fold), group in grouped:
+        pred_cum = float(group["pred_return"].sum())
+        actual_cum = float(group["actual_return"].sum())
+        price_err = group["pred_price"].to_numpy(float) - group["actual_price"].to_numpy(float)
+        actual_price = np.abs(group["actual_price"].to_numpy(float))
+        rows.append(
+            {
+                "method": method,
+                "fold": int(fold),
+                "origin_dt": group["origin_dt"].iloc[0],
+                "pred_cum_return": pred_cum,
+                "actual_cum_return": actual_cum,
+                "magnitude_capture_ratio": pred_cum / (actual_cum + EPS),
+                "direction_correct": bool(np.sign(pred_cum) == np.sign(actual_cum)),
+                "return_MAE": float(np.mean(np.abs(group["pred_return"].to_numpy(float) - group["actual_return"].to_numpy(float)))),
+                "price_MAE": float(np.mean(np.abs(price_err))),
+                "price_MAPE": float(np.mean(np.abs(price_err) / (actual_price + EPS)) * 100.0),
+            }
+        )
+    fold_metrics = pd.DataFrame(rows)
+    abs_actual = np.abs(fold_metrics["actual_cum_return"])
+    high_threshold = abs_actual.quantile(0.75)
+    fold_metrics["regime"] = np.where(abs_actual >= high_threshold, "tail_event", "normal")
+    fold_metrics["extreme_underprediction"] = (
+        (fold_metrics["regime"] == "tail_event")
+        & (np.sign(fold_metrics["pred_cum_return"]) == np.sign(fold_metrics["actual_cum_return"]))
+        & (np.abs(fold_metrics["pred_cum_return"]) < 0.5 * np.abs(fold_metrics["actual_cum_return"]))
+    )
+    return fold_metrics
+
+
+def make_regime_summary(fold_metrics: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for (method, regime), group in fold_metrics.groupby(["method", "regime"], sort=False):
+        rows.append(
+            {
+                "method": method,
+                "regime": regime,
+                "folds": int(len(group)),
+                "price_MAPE": float(group["price_MAPE"].mean()),
+                "return_MAE": float(group["return_MAE"].mean()),
+                "direction_acc": float(group["direction_correct"].mean()),
+                "magnitude_capture_ratio_mean": float(group["magnitude_capture_ratio"].replace([np.inf, -np.inf], np.nan).mean()),
+                "extreme_underprediction_rate": float(group["extreme_underprediction"].mean()),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["regime", "price_MAPE"]).reset_index(drop=True)
+
+
 def save_forecast_plot(records: pd.DataFrame, panel: pd.DataFrame, output_path: Path, max_methods: int = 8) -> None:
     methods = records.groupby("method")["price_MAPE_proxy"].mean().sort_values().index.tolist() if "price_MAPE_proxy" in records else records["method"].drop_duplicates().tolist()
     methods = methods[:max_methods]
@@ -356,6 +538,28 @@ def save_forecast_plot(records: pd.DataFrame, panel: pd.DataFrame, output_path: 
         ax.grid(True, alpha=0.25)
         ax.legend(loc="best")
     axes[-1, 0].set_xlabel("date")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
+def save_mcr_plot(regime_summary: pd.DataFrame, output_path: Path) -> None:
+    tail = regime_summary[regime_summary["regime"] == "tail_event"].copy()
+    if tail.empty:
+        return
+    tail = tail.sort_values("price_MAPE")
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+    axes[0].bar(tail["method"], tail["magnitude_capture_ratio_mean"])
+    axes[0].axhline(1.0, color="black", linewidth=1.0, linestyle="--")
+    axes[0].set_title("Tail-event magnitude capture ratio")
+    axes[0].set_ylabel("mean pred/actual cumulative return")
+    axes[0].grid(axis="y", alpha=0.25)
+    axes[1].bar(tail["method"], tail["extreme_underprediction_rate"])
+    axes[1].set_title("Tail-event extreme underprediction rate")
+    axes[1].set_ylabel("rate")
+    axes[1].grid(axis="y", alpha=0.25)
+    for ax in axes:
+        ax.tick_params(axis="x", rotation=35)
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
@@ -419,6 +623,16 @@ def run(args: argparse.Namespace) -> Path:
         "blend_alpha": args.blend_alpha,
         "ridge_alpha": args.ridge_alpha,
         "retrieval_similarity": "causal history-window weighted distance",
+        "rag4cts_additions": {
+            "mi_feature_weighting": True,
+            "conditional_tail_mi_when_shock_likely": True,
+            "tail_boost_weeks": args.tail_boost_weeks,
+            "tail_boost": args.tail_boost,
+            "shock_quantile": args.shock_quantile,
+            "event_quantile": args.event_quantile,
+            "event_distance_discount": args.event_distance_discount,
+            "event_distance_penalty": args.event_distance_penalty,
+        },
         "future_exog_used": False,
         "candidate_future_used_only_as_retrieved_outcome": True,
         "deep_predictions": str(args.model_predictions) if args.model_predictions else "",
@@ -442,10 +656,49 @@ def run(args: argparse.Namespace) -> Path:
 
         target_retrieved = retrieve_windows(panel, features, origin_idx, target_cols, args.history_length, args.horizon, args.top_k, args.decay)
         feature_retrieved = retrieve_windows(panel, features, origin_idx, full_cols, args.history_length, args.horizon, args.top_k, args.decay)
+        shock_likely, query_event_label, recent_vol = is_shock_likely_at_origin(
+            panel, features, origin_idx, target_cols, args.shock_quantile
+        )
+        mi_weights = compute_feature_weights(
+            panel,
+            features,
+            full_cols,
+            origin_idx,
+            args.history_length,
+            args.horizon,
+            args.tail_mi_quantile,
+            shock_likely,
+        )
+        event_threshold_pair = event_thresholds(
+            panel,
+            origin_idx - args.horizon,
+            args.history_length,
+            args.horizon,
+            args.event_quantile,
+        )
+        rag_retrieved = retrieve_windows(
+            panel,
+            features,
+            origin_idx,
+            full_cols,
+            args.history_length,
+            args.horizon,
+            args.top_k,
+            args.decay,
+            feature_weights=mi_weights,
+            tail_boost_weeks=args.tail_boost_weeks,
+            tail_boost=args.tail_boost,
+            event_threshold_pair=event_threshold_pair,
+            shock_event_label=query_event_label if shock_likely else None,
+            event_distance_discount=args.event_distance_discount,
+            event_distance_penalty=args.event_distance_penalty,
+        )
         target_k, target_k_log = dynamic_k(target_retrieved, args.top_k)
         feature_k, feature_k_log = dynamic_k(feature_retrieved, args.top_k)
+        rag_k, rag_k_log = dynamic_k(rag_retrieved, args.top_k)
         retrieval_only = retrieval_forecast(target_retrieved, target_k, args.horizon)
         feature_retrieval = retrieval_forecast(feature_retrieved, feature_k, args.horizon)
+        rag_retrieval = retrieval_forecast(rag_retrieved, rag_k, args.horizon)
         target_model = ridge_forecast(panel, features, origin_idx, target_cols, args.history_length, args.horizon, args.ridge_alpha)
         multi_model = ridge_forecast(panel, features, origin_idx, full_cols, args.history_length, args.horizon, args.ridge_alpha)
 
@@ -456,6 +709,8 @@ def run(args: argparse.Namespace) -> Path:
             "model_plus_retrieval": blend_returns(multi_model, retrieval_only, args.blend_alpha),
             "feature_retrieval": feature_retrieval,
             "feature_model_retrieval": blend_returns(multi_model, feature_retrieval, args.blend_alpha),
+            "rag4cts_feature_retrieval": rag_retrieval,
+            "rag4cts_feature_model_retrieval": blend_returns(multi_model, rag_retrieval, args.blend_alpha),
         }
 
         if not deep_predictions.empty:
@@ -466,6 +721,7 @@ def run(args: argparse.Namespace) -> Path:
                     deep_returns = group["pred_log_return"].to_numpy(dtype=float)[: args.horizon]
                     method_returns[f"deep_{model_name}"] = deep_returns
                     method_returns[f"deep_{model_name}_feature_retrieval"] = blend_returns(deep_returns, feature_retrieval, args.blend_alpha)
+                    method_returns[f"deep_{model_name}_rag4cts_retrieval"] = blend_returns(deep_returns, rag_retrieval, args.blend_alpha)
 
         actual_rets = actual_returns(panel, origin_idx, args.horizon)
         actual_prices = panel.loc[origin_idx + 1:origin_idx + args.horizon, TARGET_COL].astype(float).to_numpy()
@@ -491,10 +747,14 @@ def run(args: argparse.Namespace) -> Path:
                         "price_MAPE_proxy": float(price_mape_proxy),
                         "target_dynamic_k": int(target_k),
                         "feature_dynamic_k": int(feature_k),
+                        "rag4cts_dynamic_k": int(rag_k),
+                        "shock_likely": bool(shock_likely),
+                        "query_event_label": query_event_label,
+                        "recent_target_vol_signal": recent_vol,
                     }
                 )
 
-        for source, candidates in [("target", target_retrieved), ("feature", feature_retrieved)]:
+        for source, candidates in [("target", target_retrieved), ("feature", feature_retrieved), ("rag4cts_feature", rag_retrieved)]:
             query_history_start = origin_idx - args.history_length + 1
             for candidate in candidates:
                 retrieval_rows.append(
@@ -508,15 +768,20 @@ def run(args: argparse.Namespace) -> Path:
                         "candidate_start_dt": candidate.start_dt,
                         "candidate_end_dt": candidate.end_dt,
                         "distance": candidate.distance,
+                        "event_label": candidate.event_label,
                         "candidate_future_cum_return": float(np.sum(candidate.future_returns)),
                         "no_overlap_pass": bool(candidate.end_idx < query_history_start),
+                        "shock_likely": bool(shock_likely),
+                        "query_event_label": query_event_label,
                     }
                 )
         target_k_log["fold"] = fold
         target_k_log["source"] = "target"
         feature_k_log["fold"] = fold
         feature_k_log["source"] = "feature"
-        dynamic_k_rows.extend(pd.concat([target_k_log, feature_k_log], ignore_index=True).to_dict("records"))
+        rag_k_log["fold"] = fold
+        rag_k_log["source"] = "rag4cts_feature"
+        dynamic_k_rows.extend(pd.concat([target_k_log, feature_k_log, rag_k_log], ignore_index=True).to_dict("records"))
 
         query_history_start = origin_idx - args.history_length + 1
         max_candidate_end = max([candidate.end_idx for candidate in [*target_retrieved, *feature_retrieved]], default=-1)
@@ -533,6 +798,10 @@ def run(args: argparse.Namespace) -> Path:
                 "candidate_end_before_query_history": bool(max_candidate_end < query_history_start),
                 "query_uses_only_history": True,
                 "future_exog_not_used": True,
+                "query_future_target_masked": True,
+                "future_oil_features_masked": True,
+                "actual_future_not_used_for_dynamic_k": True,
+                "candidate_event_labels_historical_only": True,
                 "deep_prediction_cutoff_aligned": True if deep_predictions.empty else bool((deep_origin_predictions["ds"] > origin_dt).all()),
                 "deep_prediction_coverage": deep_prediction_coverage,
             }
@@ -550,7 +819,12 @@ def run(args: argparse.Namespace) -> Path:
 
     metrics = compute_metrics(forecasts)
     metrics.to_csv(tables_dir / "metrics_summary.csv", index=False)
+    fold_metrics = make_per_fold_metrics(forecasts)
+    fold_metrics.to_csv(tables_dir / "per_fold_metrics.csv", index=False)
+    regime_summary = make_regime_summary(fold_metrics)
+    regime_summary.to_csv(tables_dir / "regime_summary.csv", index=False)
     save_metrics_plot(metrics, plots_dir / "metrics_price_mape.png")
+    save_mcr_plot(regime_summary, plots_dir / "tail_mcr_extreme_underprediction.png")
     save_forecast_plot(forecasts, panel, plots_dir / "continuous_forecast_overlay.png")
 
     best = metrics.iloc[0].to_dict()
@@ -580,7 +854,8 @@ def run(args: argparse.Namespace) -> Path:
         "- Retrieval uses only the observed history window up to each origin.",
         "- Candidate future paths are used only after historical candidates are selected.",
         "- No future exogenous variables are used for the query.",
-        "- Compared methods: target-only model, multivariate model, retrieval-only, model+retrieval, feature+retrieval, and feature+model+retrieval.",
+        "- RAG4CTS additions include MI feature weighting, shock-aware bucket retrieval, recent-week tail boost, and dynamic-k selection without query future actuals.",
+        "- Compared methods: target-only model, multivariate model, retrieval-only, model+retrieval, feature+retrieval, feature+model+retrieval, rag4cts_feature_retrieval, and rag4cts_feature_model_retrieval.",
         "- Deep model predictions are overlaid when a fold48 prediction CSV is supplied.",
         "",
         "## Key Result",
@@ -597,6 +872,9 @@ def run(args: argparse.Namespace) -> Path:
         "",
         "## Metrics",
         markdown_table(metrics),
+        "",
+        "## Regime Summary",
+        markdown_table(regime_summary),
         "",
         "## Leakage Audit",
         markdown_table(leakage_audit),
@@ -624,6 +902,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--blend-alpha", type=float, default=0.5)
     parser.add_argument("--ridge-alpha", type=float, default=10.0)
     parser.add_argument("--decay", type=float, default=0.96)
+    parser.add_argument("--tail-boost-weeks", type=int, default=3)
+    parser.add_argument("--tail-boost", type=float, default=2.0)
+    parser.add_argument("--shock-quantile", type=float, default=0.85)
+    parser.add_argument("--tail-mi-quantile", type=float, default=0.80)
+    parser.add_argument("--event-quantile", type=float, default=0.10)
+    parser.add_argument("--event-distance-discount", type=float, default=0.85)
+    parser.add_argument("--event-distance-penalty", type=float, default=1.15)
     parser.add_argument("--z-window", type=int, default=26)
     parser.add_argument("--slope-window", type=int, default=4)
     parser.add_argument("--vol-window", type=int, default=8)
