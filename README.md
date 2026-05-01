@@ -4,6 +4,8 @@
 
 [WTI Review in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/notebooks/weekly_wti_review_runner.ipynb)
 
+[Weekly WTI RAG4CTS Overlay in Colab](https://colab.research.google.com/github/Jaeho777/newoil/blob/main/notebooks/weekly_wti_rag4cts_overlay_colab.ipynb)
+
 This repository is structured for one main purpose:
 
 - run overnight WTI experiments in Colab
